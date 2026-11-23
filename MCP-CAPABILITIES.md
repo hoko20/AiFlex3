@@ -13,24 +13,28 @@
 
 | 维度 | 数量 |
 |---|---|
-| MCP 工具 | 7 个 |
-| MCP operation | 73 个（read 28 / sensitive 9 / control 20 / script 1 / trace 4 / frida 11） |
-| 授权组 | 5 组（read 始终开；sensitive / control / script / tracing 默认关；`aiflex_frida` 挂在 sensitive 下，不新增开关） |
+| MCP 工具 | 9 个 |
+| MCP operation | 84 个（read 28 / sensitive 9 / control 20 / script 1 / trace 4 / frida 11 / disasm 7 / dump 4） |
+| 授权组 | 5 组（read 始终开；sensitive / control / script / tracing 默认关；`aiflex_frida`、`aiflex_disasm`、`aiflex_dump` 都挂在 sensitive 下，不新增开关） |
 | 真实触摸手势 | 7 种 |
 | FLEX 原生工具入口 | 全部 FLEX globals 行 + `extension.headers` + `extension.disassembly` |
 | 原生层只读观测 | frida-gum（模块/符号/线程/内存区间/内存读/特征扫描/回调栈/崩溃记录） |
+| 机器码分析 | capstone 5.0.1（AArch64 反汇编 / 函数边界 / CFG / 交叉引用 / 符号化） |
+| 二进制导出 | Mach-O 内存导出（按 segment 搬明文、`cryptid` 置零） |
 
-### 0.2 七个工具
+### 0.2 九个工具
 
 | 工具 | 授权 | operation 数 | 能力域 | 详见 |
 |---|---|---|---|---|
-| `aiflex_status` | read | — | 端点、监听状态、5 组授权、宿主版本、选中对象、Frida 引擎状态 | §5 |
+| `aiflex_status` | read | — | 端点、监听状态、5 组授权、宿主版本、选中对象、Frida/反汇编/导出引擎状态 | §5 |
 | `aiflex_read` | read | 28 | 现场认知、界面读取、对象与类、数据元信息、能力探测 | §6 |
 | `aiflex_sensitive` | sensitive | 9 | 头文件、网络正文、日志/文件内容、defaults 值、Keychain 元数据、截图 | §7 |
 | `aiflex_control` | control | 20 | 面板与 FLEX 导航、输入、点击、滚动、方法调用、真实手势 | §8 |
 | `aiflex_script` | script | 1（`run_js`） | 仅当前页 WKWebView/UIWebView 执行 JS | §13.7 |
 | `aiflex_trace` | tracing | 4（`start`/`read`/`stop`/`clear`） | 实例方法 IMP 替换 + 调用记录（实验） | §13.8 |
 | `aiflex_frida` | sensitive | 11 | 原生层只读观测：模块/符号/线程/内存区间/内存读/特征扫描/回调栈/崩溃记录 | §18 |
+| `aiflex_disasm` | sensitive | 7 | AArch64 反汇编、函数与 CFG、函数序言扫描、符号双向解析、交叉引用、ObjC 方法体 | §19 |
+| `aiflex_dump` | sensitive | 4 | 已加载镜像枚举、加密状态、明文 Mach-O 导出、导出文件清单 | §20 |
 
 ### 0.3 `aiflex_read` 的 28 个 operation 分组
 
@@ -98,10 +102,14 @@
 | 指令级追踪 / 覆盖率 | 无 Stalker 类能力 |
 | 跨进程 attach / spawn / 进程列表 | 受 App 沙盒与 `task_for_pid` 限制，进程内无法实现 |
 | 跑 frida 的 `.js` / `.ts` 脚本 | 现有 `run_js` 只作用于 WKWebView，不是 GumJS |
+| 反编译成类 C 伪代码 | 有反汇编与 CFG（`aiflex_disasm`），没有 decompiler |
+| 重签名 / 安装导出包 | `aiflex_dump` 导出的 Mach-O 不带有效签名，只能静态分析 |
 
 已在 3.1.0 补齐（`aiflex_frida`）：模块导出/导入符号枚举、任意地址内存**读**、内存特征扫描、线程列表、主线程符号化调用栈、映射区间、崩溃记录。详见 §18。
 
-写类能力（hook / patch / Stalker）与跨进程控制仍不在本 dylib 内，理由见 §17.1 与 §18.6。
+已在 3.2.0 补齐（`aiflex_disasm` / `aiflex_dump`）：AArch64 反汇编、函数边界与基本块 CFG、交叉引用、符号双向解析、ObjC 方法体反汇编、加密镜像的明文导出。详见 §19、§20。
+
+写类能力（hook / patch / Stalker）与跨进程控制仍不在本 dylib 内，理由见 §17.1、§18.6、§19.5。
 
 ---
 
@@ -148,12 +156,12 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | 组 | 开关 | 不开启的后果 |
 |---|---|---|
 | read | 始终可用 | `aiflex_status` / `aiflex_read` |
-| sensitive | 手机面板「敏感读取」 | `aiflex_sensitive` **和** `aiflex_frida` 都不出现在 `tools/list` |
+| sensitive | 手机面板「敏感读取」 | `aiflex_sensitive`、`aiflex_frida`、`aiflex_disasm`、`aiflex_dump` 四个工具都不出现在 `tools/list` |
 | control | 手机面板「界面控制」 | `aiflex_control` 不出现在 `tools/list` |
 | script | 手机面板「脚本执行」 | `aiflex_script` 不出现在 `tools/list` |
 | tracing | 手机面板「方法追踪」 | `aiflex_trace` 不出现在 `tools/list` |
 
-`aiflex_frida` 不新增开关，挂在 sensitive 下：能读进程内存就等于敏感读取，和 `sandbox_read` / `class_header` 同级。它本身只读，没有写类 operation。
+`aiflex_frida` / `aiflex_disasm` / `aiflex_dump` 都不新增开关，统一挂在 sensitive 下：能读进程内存、能读代码页、能把明文二进制写出来，这三件事本来就同一量级的敏感度，和 `sandbox_read` / `class_header` 同级。三者都只读运行时代码，没有写类 operation。
 
 所有写操作、敏感读取都必须由手机端用户显式授权；授权关闭时工具直接不可见，调用会报“未知工具”。
 
@@ -175,12 +183,15 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 | 工具 | 授权 | 用途 |
 |---|---|---|
-| `aiflex_status` | read | 当前 App、端点、服务状态、工具组 |
+| `aiflex_status` | read | 当前 App、端点、服务状态、工具组、三个原生引擎是否可用 |
 | `aiflex_read` | read | 只读观察：页面、文字查找、视图树、对象/属性、实例、网络、沙盒、设置、快照 |
 | `aiflex_sensitive` | sensitive | 敏感内容：头文件、日志/网络正文、文件搜索、截图、Keychain 元数据 |
 | `aiflex_control` | control | 操作：导航、按文字点击、输入、控件、滚动、高亮、手势、方法调用 |
 | `aiflex_script` | script | 在 WKWebView 执行 JavaScript |
 | `aiflex_trace` | tracing | 实验性方法调用追踪 |
+| `aiflex_frida` | sensitive | 原生层只读观测：模块/符号/线程/内存区间/内存读/特征扫描/调用栈/崩溃记录 |
+| `aiflex_disasm` | sensitive | AArch64 反汇编、函数 CFG、符号解析、交叉引用、ObjC 方法体 |
+| `aiflex_dump` | sensitive | 加密镜像的明文 Mach-O 导出 |
 
 所有工具都是 `operation` 驱动，参数平铺在同一层，例如：
 
@@ -478,9 +489,9 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 12. 版本
 
-- 文档版本：2026-11-23（AiFlex3 3.1.0）
-- 插件：`com.hoko20.aiflex3` 3.1.0，产物 `FLEX++-3.1.0-arm64-rootless.dylib` / `com.hoko20.aiflex3_3.1.0_iphoneos-arm64.deb`
-- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息、**原生层只读观测（模块/符号/内存/线程/调用栈/崩溃）**
+- 文档版本：2026-11-23（AiFlex3 3.2.0）
+- 插件：`com.hoko20.aiflex3` 3.2.0，产物 `FLEX++-3.2.0-arm64-rootless.dylib` / `com.hoko20.aiflex3_3.2.0_iphoneos-arm64.deb`
+- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息、原生层只读观测（模块/符号/内存/线程/调用栈/崩溃）、**AArch64 反汇编与 CFG、符号双向解析、交叉引用、ObjC 方法体反汇编、加密镜像明文导出**
 - 仓库：https://github.com/hoko20/AiFlex3
 - 自动构建：GitHub Actions `Build AiFlex3`，push 到 `main` 触发，产物以 artifact 形式提供
 
@@ -690,6 +701,38 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 16. 变更记录
 
+### 3.2.0（2026-11-23）—— 新增 `aiflex_disasm`（机器码分析）+ `aiflex_dump`（二进制导出）
+
+**新增**
+
+- 工具 `aiflex_disasm`（挂 sensitive 组，7 个只读 operation）：`status`、`at`、`function`、`scan_functions`、`symbol`、`xref`、`objc_method`。把仓库里已有但只在 UI 里可用的 `x/Disassembler/UCDisassembler`（973 行，capstone 5.0.1）接进 MCP。详见 §19。
+- 工具 `aiflex_dump`（挂 sensitive 组，4 个只读 operation）：`status`、`image`、`dump`、`list`。按 segment 表把内存里的明文搬到 `Documents/AiFlex3Dump/`，并把 `LC_ENCRYPTION_INFO_64.cryptid` 置 0。详见 §20。
+- 源文件 `FLEXAiFlexDisasm.h/.m`（778 行）、`FLEXAiFlexDumper.h/.m`（602 行）。
+- `aiflex_status` 新增 `disasm` 与 `dumper` 两个引擎状态字段。
+
+**为什么这次能加、上一次没加**
+
+反汇编引擎一直在仓库里，只是没有 MCP 入口；`UCPseudocodeViewController` 只有一个纯展示的字符串容器，全仓库没有伪代码生成器，所以「反汇编 ↔ 伪代码」这条链路此前是断的。本次只接反汇编与 CFG，不伪造伪代码——见 §19.5。
+
+**输入规模硬上限（都是刻意的）**
+
+| operation | 默认 | 上限 |
+|---|---|---|
+| `at` 反汇编区间 | 4 KiB | 64 KiB |
+| `function` 分析窗口 | 8 KiB | 32 KiB |
+| `scan_functions` 区间 | 32 KiB | 128 KiB |
+| `scan_functions` 函数数 | 32 | 128 |
+| `xref` 区间 | 16 KiB | 64 KiB |
+| 返回指令条数 | 200 | 2000 |
+
+capstone 反汇编是同步阻塞、无中断点的，所以「限时」只能靠「限输入」，不能靠 `dispatch_after` 打断。`scan_functions` 另有 4 秒时间预算，超时即停并标 `stopReason=time_budget`。
+
+**没有做的事（边界不变）**
+
+- 仍然没有 inline hook / 内存写 / 代码补丁 / Stalker / CModule / GumJS。
+- 没有伪代码（汇编 → 类 C）生成器。手机端手写 ARM64 还原器质量天花板远低于 IDA / Ghidra，投入产出不成立。
+- `aiflex_dump` 导出的二进制不带有效签名，**只能静态分析，不能安装运行**。
+
 ### 3.1.0（2026-11-23）—— 新增 `aiflex_frida`（只读原生观测）+ 修崩溃监控
 
 **新增**
@@ -897,3 +940,205 @@ CI 在 `Install Theos` 之后追加 `Fetch frida-gum devkit`：取 `releases/lat
 
 
 
+
+---
+
+## 19. `aiflex_disasm`（需「敏感读取」授权，只读）
+
+把仓库里一直存在、但此前只能在 FLEX UI 里点开的 `x/Disassembler/UCDisassembler`（973 行，capstone 5.0.1）接进 MCP。装的是**机器码事实**，不是业务结论。
+
+### 19.1 参数
+
+| 参数 | 类型 | 适用 operation | 说明 |
+|---|---|---|---|
+| `operation` | string | 全部 | 见 19.2 |
+| `address` | string | `at` / `function` / `scan_functions` / `symbol` / `xref` / `objc_method`（`symbol` 可与 `name` 二选一） | **必须是字符串**，如 `"0x104a2b000"`。JSON number 是 double，超过 2^53 丢精度 |
+| `name` | string | `symbol` | 传 `"-[Foo bar]"`、`"+[Foo bar]"`、类名或 C 符号名 |
+| `class` / `selector` / `meta` | string / string / bool | `objc_method` | `meta=true` 表示类方法 |
+| `size` | integer | `at` / `scan_functions` / `xref` | 字节数；`at` 默认 4096 / 上限 65536，`scan_functions` 默认 32768 / 上限 131072，`xref` 默认 16384 / 上限 65536 |
+| `max_size` | integer | `function` / `scan_functions` | 单函数分析窗口；默认 8192 / 上限 32768 |
+| `range` | string | `xref` | 搜索区间起点。不传则用 `address - 0x4000` |
+| `offset` / `limit` | integer | `at` / `function` / `objc_method` | 指令分页；默认 `limit=200`，上限 2000 |
+| `verbose` | bool | `at` / `function` / `objc_method` | 返回 operand 结构化数组。**默认关**，开了一般会膨胀数倍 |
+
+### 19.2 operation
+
+| operation | 作用 | 返回要点 |
+|---|---|---|
+| `status` | 引擎与上限 | `available`、`engine`（含 capstone 主版本）、`limits`、`readOnly:true` |
+| `at` | 反汇编一段连续字节 | `start`、`size`、`instructions[]`、`total`、`hasMore`、`nextOffset` |
+| `function` | 函数边界 + 基本块 CFG + 调用点 | `start`/`end`/`size`/`name`、`basicBlockCount`、`blocks[]`、`callSites`、`calledFrom` |
+| `scan_functions` | 区间内找函数序言 | `functionCount`、`truncated`、`stopReason`、`covered`、`elapsedMs`；**只给签名不回指令** |
+| `symbol` | 地址 ↔ 符号双向解析 | 传 `address` 走 `dladdr` + ObjC 方法与类引用 + 字符串；传 `name` 走 `-[Class sel]` → 类名 → `dlsym` |
+| `xref` | 谁引用了这个地址 | `branches[]`（直接分支）+ `pointers[]`（8 字节字面量） |
+| `objc_method` | 按类与方法名反汇编方法体 | `imp`、`superclass`、`functionStart`/`End`、`blocks[]`、`instructions[]` |
+
+### 19.3 指令对象
+
+默认字段（`verbose=false`）：
+
+```json
+{
+  "address": "0x104a2b0a4",
+  "size": 4,
+  "bytes": "fd 7b bf a9",
+  "text": "stp x29, x30, [sp, #-0x10]!",
+  "flags": ["ok", "frame", "new_block"],
+  "target": "0x104a2b100",
+  "targetName": "-[FooViewController viewDidLoad]",
+  "symbol": "-[FooViewController viewDidLoad]",
+  "comment": "objc_msgSend ; \"hello\"",
+  "xref": "; XREF: 0x104a2b1c0"
+}
+```
+
+`flags` 取值：`ok`（capstone 成功解码）、`call`（`bl`/`blr`）、`ret`、`jump`（`b`/`br`）、`cond_jump`（`b.xx`/`cbz`/`cbnz`/`tbz`/`tbnz`）、`nop`、`frame`（`stp x29,x30`/`stur` 建立栈帧）、`new_func`、`new_block`。
+
+`verbose=true` 时额外给 `operands[]`，每项含 `kind`（`reg`/`imm`/`mem`/`fpreg`）、`text`、`reg`、`value`、`base`、`index`、`offset`、`scale`。**只在需要看具体寄存器与偏移时开**。
+
+### 19.4 典型工作流
+
+**从崩溃栈里的裸地址走到函数体**
+
+```
+aiflex_frida(operation=backtrace)                       → 拿到栈上的返回地址
+aiflex_disasm(operation=symbol, address="0x104a2b0a4")  → 确认落在哪个镜像、有没有导出符号
+aiflex_disasm(operation=function, address="0x104a2b0a4") → 函数边界 + CFG
+aiflex_disasm(operation=xref, address="0x104a2b0a4")     → 谁调用了它
+```
+
+**反汇编一个 ObjC 方法体（最直接的一条路）**
+
+```
+aiflex_disasm(operation=objc_method, class="FooViewController", selector="viewDidLoad")
+```
+
+比 `symbol(name="-[FooViewController viewDidLoad]")` 再 `function` 少两步，且自动带上方法实现的 `imp` 地址。
+
+**在一个镜像里找所有函数**
+
+```
+aiflex_frida(operation=modules, filter="Foo")              → 拿 base 与 size
+aiflex_disasm(operation=scan_functions, address="<base>", size=65536)
+```
+
+`scan_functions` 命中序言后会按 `end` 跳到下一个候选，不会在同一个函数里反复命中；`stopReason` 说明为什么停：`time_budget` / `unreadable_page` / `function_limit` / `range_end`。
+
+### 19.5 为什么没有伪代码
+
+`UCPseudocodeViewController` 是一个 66 行的纯展示容器：`initWithPseudocode:title:` 接收一个已经拼好的字符串，**全仓库没有任何调用方，也没有生成器**。也就是说「汇编 → 类 C」这条链路在代码层面根本不存在，不是被关掉了。
+
+手写 ARM64 → C 的还原器，质量天花板极低（栈变量识别、类型推断、struct 恢复都做不好），而 iOS 上 IDA / Ghidra / Hopper 免费且成熟。手机端的正确定位是**取证现场**，不是**逆向工作台**：现场把地址、调用关系、CFG、字符串、符号取全，二进制用 §20 导出去，桌面上慢慢看。
+
+### 19.6 限制与性能
+
+| 项 | 说明 |
+|---|---|
+| 执行队列 | 专有串行队列 `com.hoko20.aiflex3.disasm`，不占主线程；capstone 的 `csh` 是全局单例，`cs_disasm` 不可并发，串行化是必须的 |
+| 反汇编粒度 | 4 字节对齐。`size` 会被向下截到 4 的倍数 |
+| 符号质量 | `dladdr` 只认**导出**符号。stripped 内部函数显示 `sub_xxx`，属正常，不是解析失败 |
+| `scan_functions` | 4 秒预算 + 数量上限，靠「限输入」而非「可中断」实现——capstone 反汇编是同步阻塞调用，没有中断点 |
+| 地址下限 | 低于 `0x100000000` 的地址直接拒绝（和引擎内部 `uc_safe_read_memory` 的判定一致），避免误读 mach 陷阱区 |
+| 大函数 | `buildCFG` 内部对基本块做线性查找，超大函数（数千条指令）会明显变慢；用 `function` 的 `max_size` 收窄窗口 |
+
+---
+
+## 20. `aiflex_dump`（需「敏感读取」授权，只读运行时）
+
+把运行中的镜像按 segment 表从内存导出成一份**明文 Mach-O**，写到 `Documents/AiFlex3Dump/`。
+
+### 20.1 为什么必须从内存拿
+
+App Store 下发的 Mach-O 里，可执行段是按页 FairPlay 加密的（`LC_ENCRYPTION_INFO_64.cryptid == 1`）。**磁盘上的那份永远是密文**，拿不到明文——这不是权限问题，是分发机制本身。内核在页错误时逐页解密再映射，所以本进程内存里的那一段就是明文。
+
+所以「解密二进制」在 iOS 上只有一条路：从活进程的内存里把已经解密的页搬出来。本引擎做的就是这件事，并把导出文件里的 `cryptid` 改成 0，否则分析工具会以为仍是密文而拒绝解析。
+
+### 20.2 参数
+
+| 参数 | 类型 | 适用 | 说明 |
+|---|---|---|---|
+| `operation` | string | 全部 | 见 20.3 |
+| `index` | integer | `image` / `dump` | 镜像序号。优先级最高 |
+| `name` | string | `dump` | 文件名或路径子串，如 `"MyApp"`、`"Frameworks/Foo"` |
+| `filter` | string | `image` | 缩小镜像枚举范围（大小写不敏感，匹配文件名与完整路径） |
+| `output` | string | `dump` | 输出文件名，默认 `<可执行名>_dump`；**只能是文件名，不能带路径** |
+| `limit` | integer | `image` | 返回条数，默认 50 / 上限 512 |
+
+`dump` 不传 `index` 也不传 `name` 时，默认处理主可执行文件（`index 0`）。
+
+### 20.3 operation
+
+| operation | 作用 |
+|---|---|
+| `status` | 主可执行文件的加密状态、段数、文件长度、输出目录、已导出文件的统计 |
+| `image` | 枚举已加载镜像：`index`、`name`、`path`、`base`、`slide`、`size`、`segments`、`encrypted`、`cryptid` |
+| `dump` | 执行导出 |
+| `list` | 列出已导出文件与 `relativePath`（可直接喂 `sandbox_read`） |
+
+### 20.4 导出过程（按代码顺序）
+
+1. 解析 `mach_header_64` 的 load commands，收集 `LC_SEGMENT_64` 与 `LC_ENCRYPTION_INFO_64`。每一步都做 `cmdsize` 上界检查——损坏的 `cmdsize` 会把游标带出映射区。
+2. 文件长度 = `max(segment.fileoff + segment.filesize)`。
+3. 校验：上限 512 MiB；可用磁盘空间不足 `2 × 长度 + 8 MiB` 时直接拒绝（原子写要落临时文件，实际需要约两倍）。
+4. `calloc` 分配缓冲区并清零——`filesize` 之外、以及读失败的页都必须是 0，残留堆数据会让 IDA 加载出一堆随机指令。
+5. 逐 segment 逐页 `vm_read_overwrite`。**段源地址 = `segment.vmaddr + slide`**，不是 `header + vmaddr`：`header` 自身已经带了 slide，用后者会把整段搬错位置。
+6. 整页读失败时，对该页**逐 4 字节再试一次**，把能读的部分捞回来（反 dump 检测通常只锁住部分页）。
+7. 把导出缓冲里 `LC_ENCRYPTION_INFO_64.cryptid` 置 0。
+8. 原子写入 `Documents/AiFlex3Dump/<文件名>`。
+
+### 20.5 返回
+
+```json
+{
+  "file": "/var/mobile/Containers/Data/Application/<UUID>/Documents/AiFlex3Dump/MyApp_dump",
+  "relativePath": "Documents/AiFlex3Dump/MyApp_dump",
+  "size": 48234496,
+  "image": "MyApp",
+  "imageIndex": 0,
+  "slide": "0x1a000",
+  "wasEncrypted": true,
+  "cryptidBefore": 1,
+  "cryptidAfter": 0,
+  "cryptoff": 16384,
+  "cryptsize": 41000000,
+  "copiedBytes": 48234496,
+  "failedBytes": 0,
+  "complete": true,
+  "elapsedMs": 214,
+  "segments": [
+    { "name": "__TEXT", "fileoff": 0, "filesize": 41009152, "source": "0x1020a0000" },
+    { "name": "__DATA_CONST", "fileoff": 41017344, "filesize": 3276800, "source": "0x1049c0000" }
+  ]
+}
+```
+
+**取走文件**：
+
+```
+aiflex_dump(operation=list)                                    → 拿 relativePath
+aiflex_sensitive(operation=sandbox_read, path="Documents/AiFlex3Dump/MyApp_dump", offset=0, limit=524288)
+```
+
+单次 `sandbox_read` 上限 512 KiB，几十 MB 的二进制要靠 `next_offset` 续读。更省事的做法是直接在越狱机上用 Filza / `scp` 从 App 的 Documents 目录取。
+
+### 20.6 失败与不完整
+
+| 情况 | 表现 |
+|---|---|
+| 部分页读不到（反 dump 检测锁页） | `failedBytes > 0`、`complete: false`、对应位置在文件里是 0；`segments[].failedBytes` 指明是哪个段 |
+| `index` 越界或 `name` 无匹配 | 报错，列出原因 |
+| 超过 512 MiB | 报错并给出实际需要的 MiB 数 |
+| 磁盘不足 | 报错并给出需要 / 可用的 MiB 数 |
+| 镜像本身不加密（系统库、内嵌 dylib） | 仍然可以导出，`wasEncrypted: false`，`note` 说明它不含 `LC_ENCRYPTION_INFO_64` |
+
+**`complete: false` 必须如实上报，不许把 partial 说成完整。** 一份少了 8% 代码页的二进制，反汇编出来会在随机位置出现非法指令，如果当成完整产物去分析，结论会错得很隐蔽。
+
+### 20.7 边界
+
+| 项 | 说明 |
+|---|---|
+| 不修改运行时代码 | 只读内存 + 写新文件，不 hook、不 patch |
+| 导出文件不带有效签名 | `cryptid` 改了、哈希都对不上，**只能静态分析，不能安装运行** |
+| `__DATA` 指针已重定位 | 内存里的指针是 rebase 后的值，导出文件里这些指针带 `slide` 偏移。按 `image base = __TEXT.vmaddr` 加载分析不受影响，但跨段指针的绝对地址会有偏差 |
+| 每进程独立可见 | 只能导出本进程已加载的镜像；要导出别的 App 得先把它注入了 |
+| 输出位置固定 | `Documents/AiFlex3Dump/`，不接任意路径，避免变成任意文件写入原语 |

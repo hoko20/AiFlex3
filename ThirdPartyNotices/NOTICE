@@ -48,3 +48,49 @@ from the upstream repository at the release tag recorded in
 build of that tag; rebuild instructions are the upstream releng scripts
 (frida/releng) for the ios-arm64 target.
 
+
+---
+
+Capstone Engine
+
+The AArch64 disassembler is Capstone 5.0.1. FLEXAiFlexDisasm.m and
+x/Disassembler/UCDisassembler.m consume it through the copy embedded in the
+frida-gum static library (see the Frida entry above), so the whole process
+contains exactly one Capstone implementation.
+
+https://github.com/capstone-engine/capstone
+
+Copyright (c) 2013, COSEINC.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+  * Neither the name of the developer nor the names of contributors may be
+    used to endorse or promote products derived from this software without
+    specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+Note on version pinning: the headers under x/capstone/include are 5.0.1 to
+match the implementation embedded in frida-gum. They must not be bumped to
+6.x independently — Capstone 6 changed the internal layout of cs_detail
+(MAX_IMPL_W_REGS 47 vs 20, MAX_NUM_GROUPS 16 vs 8, union offset 154 vs 92),
+so mixing 6.x headers with the 5.0.1 implementation silently misreads arm64
+operands. x/capstone/*.c is kept in the tree for reference but is excluded
+from the build for the same reason.
