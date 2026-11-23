@@ -25,6 +25,10 @@
 + (void)setScriptEnabled:(BOOL)enabled;
 + (BOOL)tracingEnabled;
 + (void)setTracingEnabled:(BOOL)enabled;
+// 代码改写组。默认关，且与其余所有组独立：它能让宿主 App 真的改变行为，
+// 打开前应在面板上明确看到「会改写运行中的代码」这句话。
++ (BOOL)hookEnabled;
++ (void)setHookEnabled:(BOOL)enabled;
 + (NSString *)endpoint;
 + (NSString *)status;
 // 端口被占用并自动顺延时的说明（正常情况为 nil）。

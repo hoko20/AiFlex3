@@ -436,17 +436,18 @@ static __weak FLEXAiFlex3ViewController *AXCurrentPanel;
 
 - (UIView *)buildPermissionCard {
     __weak typeof(self) weakSelf = self;
-    NSArray *titles = @[@"授权保护", @"敏感读取", @"界面控制", @"脚本执行", @"方法追踪"];
+    NSArray *titles = @[@"授权保护", @"敏感读取", @"界面控制", @"脚本执行", @"方法追踪", @"代码改写"];
     NSArray *details = @[
         @"要求客户端携带 Bearer 令牌；关闭后同局域网可直接连接",
         @"头文件、日志/网络正文、文件搜索、截图、Keychain 元数据",
         @"点击、输入、滚动、手势、方法调用与高亮，会改变 App 状态",
         @"在 WKWebView 执行 JavaScript，可能改变网页状态",
-        @"替换方法实现并记录调用，高风险，10 分钟自动停止"
+        @"替换方法实现并记录调用，高风险，10 分钟自动停止",
+        @"inline hook 与字节补丁，会真实改变运行中的代码；可逐条还原"
     ];
-    NSArray *symbols = @[@"lock.shield.fill", @"eye.fill", @"hand.tap.fill", @"curlybraces", @"waveform.path.ecg"];
+    NSArray *symbols = @[@"lock.shield.fill", @"eye.fill", @"hand.tap.fill", @"curlybraces", @"waveform.path.ecg", @"syringe.fill"];
     NSArray *tints = @[UIColor.systemGreenColor, UIColor.systemBlueColor, UIColor.systemIndigoColor,
-                       UIColor.systemOrangeColor, UIColor.systemRedColor];
+                       UIColor.systemOrangeColor, UIColor.systemRedColor, UIColor.systemPinkColor];
 
     NSMutableArray *rows = [NSMutableArray new];
     NSMutableArray *switches = [NSMutableArray new];
@@ -558,9 +559,10 @@ static __weak FLEXAiFlex3ViewController *AXCurrentPanel;
         @([FLEXAiFlexMCPServer sensitiveEnabled]),
         @([FLEXAiFlexMCPServer controlEnabled]),
         @([FLEXAiFlexMCPServer scriptEnabled]),
-        @([FLEXAiFlexMCPServer tracingEnabled])
+        @([FLEXAiFlexMCPServer tracingEnabled]),
+        @([FLEXAiFlexMCPServer hookEnabled])
     ];
-    NSArray *names = @[@"授权保护", @"敏感读取", @"界面控制", @"脚本执行", @"方法追踪"];
+    NSArray *names = @[@"授权保护", @"敏感读取", @"界面控制", @"脚本执行", @"方法追踪", @"代码改写"];
     NSMutableArray *summaryParts = [NSMutableArray new];
     for (NSUInteger index = 0; index < self.permissionSwitches.count && index < states.count; index++) {
         UISwitch *toggle = self.permissionSwitches[index];
@@ -572,7 +574,7 @@ static __weak FLEXAiFlex3ViewController *AXCurrentPanel;
             states[index].boolValue ? @"开" : @"关"]];
     }
     self.permissionFootnote.text = [NSString stringWithFormat:
-        @"当前状态：%@\n\n关闭授权保护后同局域网可直接连接，请仅在可信网络使用；界面控制会真实改变 App 状态；方法追踪可能导致崩溃或卡顿，默认关闭。",
+        @"当前状态：%@\n\n关闭授权保护后同局域网可直接连接，请仅在可信网络使用；界面控制会真实改变 App 状态；方法追踪可能导致崩溃或卡顿，默认关闭；代码改写会修改运行中的指令，只能逐条还原、进程重启后自动消失。",
         [summaryParts componentsJoinedByString:@" · "]];
 
     NSArray *items = [self toolItems];
@@ -609,7 +611,11 @@ static __weak FLEXAiFlex3ViewController *AXCurrentPanel;
         @{@"name": @"aiflex_sensitive", @"detail": @"头文件、日志搜索/网络正文、文件、截图（需敏感读取）", @"enabled": @([FLEXAiFlexMCPServer sensitiveEnabled])},
         @{@"name": @"aiflex_control", @"detail": @"按文字点击、高亮、输入、滚动、方法调用与手势（需界面控制）", @"enabled": @([FLEXAiFlexMCPServer controlEnabled])},
         @{@"name": @"aiflex_script", @"detail": @"在 WKWebView 执行 JavaScript（需脚本执行，单独授权）", @"enabled": @([FLEXAiFlexMCPServer scriptEnabled])},
-        @{@"name": @"aiflex_trace", @"detail": @"方法调用追踪，高风险，10 分钟自动停止（需方法追踪）", @"enabled": @([FLEXAiFlexMCPServer tracingEnabled])}
+        @{@"name": @"aiflex_trace", @"detail": @"方法调用追踪，高风险，10 分钟自动停止（需方法追踪）", @"enabled": @([FLEXAiFlexMCPServer tracingEnabled])},
+        @{@"name": @"aiflex_frida", @"detail": @"原生层只读观测：模块、符号、线程、内存读、特征扫描（需敏感读取）", @"enabled": @([FLEXAiFlexMCPServer sensitiveEnabled])},
+        @{@"name": @"aiflex_disasm", @"detail": @"Arm64 反汇编、函数 CFG、交叉引用（需敏感读取）", @"enabled": @([FLEXAiFlexMCPServer sensitiveEnabled])},
+        @{@"name": @"aiflex_dump", @"detail": @"从内存导出已解密的 Mach-O，用于静态分析（需敏感读取）", @"enabled": @([FLEXAiFlexMCPServer sensitiveEnabled])},
+        @{@"name": @"aiflex_hook", @"detail": @"inline hook 与字节补丁，会改变运行中的代码（需代码改写）", @"enabled": @([FLEXAiFlexMCPServer hookEnabled])}
     ];
 }
 
@@ -644,6 +650,8 @@ static __weak FLEXAiFlex3ViewController *AXCurrentPanel;
         [FLEXAiFlexMCPServer setScriptEnabled:on];
     } else if (row == 4) {
         [FLEXAiFlexMCPServer setTracingEnabled:on];
+    } else if (row == 5) {
+        [FLEXAiFlexMCPServer setHookEnabled:on];
     }
     // 等切换动画走完再同步 UI：立刻 refresh 会把正在动画中的 UISwitch 直接改写，
     // 视觉上就像“拨了又弹回去、点了没反应”。

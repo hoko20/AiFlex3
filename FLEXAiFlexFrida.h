@@ -17,6 +17,12 @@
 /// gum 是否被编译进当前产物并成功初始化。
 + (BOOL)engineAvailable;
 
+/// 幂等地完成 gum 初始化并返回是否可用。
+/// gum_init_embedded() 全进程只能调用一次，重复调用会重复初始化内部锁与调度线程
+/// 而直接崩溃。所有需要 gum 的引擎（本引擎与 FLEXAiFlexHook）都必须走这里，
+/// 不允许各自在自己的 dispatch_once 里再调一次。
++ (BOOL)ensureGumInitialized;
+
 /// gum 版本串；未编译进产物时返回 nil。
 + (NSString *)engineVersion;
 

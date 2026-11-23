@@ -320,6 +320,12 @@ static gboolean GXScanRange(const GumRangeDetails *details, gpointer user_data) 
     return GXEnsureEngine();
 }
 
+// 与 engineAvailable 同义，只是名字点明了「会执行初始化」这个副作用。
+// 供 FLEXAiFlexHook 调用：hook 引擎自己不初始化 gum，避免第二份 dispatch_once。
++ (BOOL)ensureGumInitialized {
+    return GXEnsureEngine();
+}
+
 + (NSString *)engineVersion {
 #ifndef GX_NO_GUM
     if (!GXEnsureEngine()) return nil;
