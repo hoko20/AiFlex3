@@ -19,7 +19,7 @@
 | 真实触摸手势 | 7 种 |
 | FLEX 原生工具入口 | 全部 FLEX globals 行 + `extension.headers` + `extension.disassembly` |
 | 原生层只读观测 | frida-gum（模块/符号/线程/内存区间/内存读/特征扫描/回调栈/崩溃记录） |
-| 机器码分析 | capstone 5.0.1（AArch64 反汇编 / 函数边界 / CFG / 交叉引用 / 符号化） |
+| 机器码分析 | capstone 6.0（AArch64 反汇编 / 函数边界 / CFG / 交叉引用 / 符号化，含 A19 Pro 的 SME2 / SVE2p1 / MTE4） |
 | 二进制导出 | Mach-O 内存导出（按 segment 搬明文、`cryptid` 置零） |
 | 代码改写 | frida-gum Interceptor（inline hook / 字节补丁 / 逐条还原 / 参数抓取） |
 
@@ -89,7 +89,7 @@
 | Lookin / Reveal 式 | `FLEXLookinInspector`、`FLEXRevealLikeInspector`、`FHS*` 快照、`RTB*` 运行时浏览 |
 | `x/Decrypt` | 抓包解密：fishhook 打 `SSL_get_psk_identity`、OpenSSL `EVP_*`/`AES_*`、`CFNetworkCopySystemProxySettings`、脚本解码。注入后**不**自动装 hook，点「抓取」才装 |
 | `x/ClassDump` | 类头文件导出（含 Swift dumper + zip） |
-| `x/Disassembler` | capstone 5.0.1 AArch64 反汇编 + CFG 图形 / 汇编列表双视图（无伪代码生成器） |
+| `x/Disassembler` | capstone 6.0 AArch64 反汇编 + CFG 图形 / 汇编列表双视图（无伪代码生成器），与 gum 5.0.1 符号隔离 |
 | `x/AppProtection` | App 保护绕过检测 |
 | `x/filza` | 文件管理入口 |
 
@@ -752,7 +752,7 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 **新增**
 
-- 工具 `aiflex_disasm`（挂 sensitive 组，7 个只读 operation）：`status`、`at`、`function`、`scan_functions`、`symbol`、`xref`、`objc_method`。把仓库里已有但只在 UI 里可用的 `x/Disassembler/UCDisassembler`（973 行，capstone 5.0.1）接进 MCP。详见 §19。
+- 工具 `aiflex_disasm`（挂 sensitive 组，7 个只读 operation）：`status`、`at`、`function`、`scan_functions`、`symbol`、`xref`、`objc_method`。把仓库里已有但只在 UI 里可用的 `x/Disassembler/UCDisassembler`（973 行，capstone 6.0，经 `flx6` 前缀与 gum 内置 5.0.1 隔离）接进 MCP。详见 §19。
 - 工具 `aiflex_dump`（挂 sensitive 组，4 个只读 operation）：`status`、`image`、`dump`、`list`。按 segment 表把内存里的明文搬到 `Documents/AiFlex3Dump/`，并把 `LC_ENCRYPTION_INFO_64.cryptid` 置 0。详见 §20。
 - 源文件 `FLEXAiFlexDisasm.h/.m`（778 行）、`FLEXAiFlexDumper.h/.m`（602 行）。
 - `aiflex_status` 新增 `disasm` 与 `dumper` 两个引擎状态字段。
@@ -881,7 +881,7 @@ CI 在 `Install Theos` 之后追加 `Fetch frida-gum devkit`：取 `releases/lat
 
 ### 17.4 已知风险与处置
 
-1. **capstone 符号冲突**：gum 静态库内 vendored 一份 capstone 5.0.1，仓库只保留同版本头文件（`x/capstone/include`），实现全部来自 gum。这条依赖是硬的——`aiflex_hook` 走 gum Interceptor，arm64 侧经 relocator 重定位被覆盖的指令，而 relocator 直接引用 capstone 内部符号 `cs_arch_register_arm64`，剥离 gum 那份会立刻 undefined。因此不能再引入第二份 capstone 源码：重名会 `duplicate symbol`，共用一份又因 `cs_detail` 布局不同（`MAX_IMPL_W_REGS` 47 vs 20、union 偏移 154 vs 92）读出错位的 arm64 operands。真需要 6.0 时的唯一路径是符号隔离：`llvm-objcopy --prefix-symbols=flx6_` 重命名 6.0 实现，调用侧同步改宏，两套并存、各自 ABI 自洽（代价约 +1.5~2.5 MB dylib）。
+1. **capstone 符号冲突（已用前缀隔离解决）**：gum 静态库内 vendored 一份 capstone 5.0.1，其 arm64 relocator 硬引用 `cs_arch_register_arm64`，`aiflex_hook` 走 Interceptor 时必然拉入，这份剥不掉。A19 Pro 的 SME2 / SVE2p1 / MTE4 只有 capstone 6.0（LLVM 17/18 解码表）能识别，5.0.1 的 LLVM 7 表对这些扩展一个枚举都没有。现在的做法（`3.5.0` 起）：`scripts/build-capstone6.sh` 单独编译 `x/capstone6/` 的 AArch64 源码，用 `llvm-objcopy --redefine-sym` 只重命名**已定义的全局符号**为 `flx6_*`（undefined 的 libc 符号保持原名），产出 `libcapstone6.a`；`UCDisassembler.m` 用同前缀宏 + 相对路径的 6.0 头消费它。两套实现并存、各自 ABI 自洽。两套头不在同一个 `-I` 搜索域，避免 `cs_detail` 布局混用（union 偏移 92 vs 154）。代价约 +1.5~2.5 MB dylib。
 2. **arm64e / PAC**：地址一律经 `gum_module_get_range` / `gum_module_find_export_by_name` 获取，不自己从函数指针里截位。
 3. **崩溃放大**：这就是本组只做只读的原因——写类操作没有 selector 黑名单可依赖，一旦写错位置，崩溃点与操作时刻解耦、无法归因。
 4. **体积与许可**：dylib 约 +4~5 MB；frida 为 wxWindows Library Licence 3.1，已在 `ThirdPartyNotices/NOTICE` 补条目，说明静态链接来源 tag 与可重链接材料位置。
@@ -992,7 +992,7 @@ CI 在 `Install Theos` 之后追加 `Fetch frida-gum devkit`：取 `releases/lat
 
 ## 19. `aiflex_disasm`（需「敏感读取」授权，只读）
 
-把仓库里一直存在、但此前只能在 FLEX UI 里点开的 `x/Disassembler/UCDisassembler`（973 行，capstone 5.0.1）接进 MCP。装的是**机器码事实**，不是业务结论。
+把仓库里一直存在、但此前只能在 FLEX UI 里点开的 `x/Disassembler/UCDisassembler`（973 行，capstone 6.0，经 `flx6` 前缀与 gum 内置 5.0.1 隔离）接进 MCP。装的是**机器码事实**，不是业务结论。
 
 ### 19.1 参数
 

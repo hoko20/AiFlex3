@@ -68,11 +68,14 @@ jobs:
           test -f frida/vendor/libfrida-gum.a
           ls -lh frida/vendor
 
-      - name: Verify single capstone
+      - name: Verify capstone headers
         run: |
-          # capstone 的实现只来自 gum 内置那份（5.0.1），仓库 x/capstone 只保留
-          # 同版本头文件供 UCDisassembler 使用。6.0 源码已于 3.4.1 移除，
-          # 需要时从 git 历史 09cd3d6 取回并走符号隔离（见 NOTICE）。
+          # 5.0.1 头给 gum 侧（gum 内置实现就是 5.0.1）；6.0 头给 UCDisassembler。
+          # 两套 cs_detail 布局不同（union 偏移 92 vs 154），不能混用。
+          echo "5.0.1 header (gum side):"
+          grep -m1 "CS_API_MAJOR" x/capstone/include/capstone/capstone.h
+          echo "6.0 header (disasm side):"
+          grep -m1 "CS_API_MAJOR" x/capstone6/include/capstone/capstone.h
           if grep -qE "^\s*CAPSTONE_(CORE|ARCH)\s*=" Makefile; then
             echo "Makefile 仍在收集 x/capstone 源码，会与 gum 内置 capstone 冲突"
             exit 1
@@ -83,14 +86,29 @@ jobs:
             find x/capstone -type f -not -path "x/capstone/include/*"
             exit 1
           fi
-          grep -m1 "CS_API_MAJOR" x/capstone/include/capstone/capstone.h
-          echo "capstone headers present, implementation comes from gum"
+          # 6.0 源码必须走 scripts/build-capstone6.sh 单独编译，
+          # 直接进 Theos 的 *_FILES 会带上未前缀的 cs_* 符号。
+          if grep -q "x/capstone6/" Makefile; then
+            echo "Makefile 引用了 x/capstone6，确认只出现在 grep -v 排除行和 CAPSTONE6_LIB 定义里"
+          fi
+
+      - name: Build capstone 6 (prefixed symbols)
+        run: |
+          bash scripts/build-capstone6.sh
+          test -f x/capstone6/lib/libcapstone6.a
+          echo "prefixed flx6_cs_open:"
+          nm -gU x/capstone6/lib/libcapstone6.a 2>/dev/null | grep -c ' flx6_cs_open$' || true
+          n=$(nm -gU x/capstone6/lib/libcapstone6.a 2>/dev/null | grep -cE ' _cs_(open|close|disasm|free)$' || true)
+          if [ "$n" != "0" ]; then
+            echo "capstone6 里仍有 $n 个未加前缀的 cs_* 符号，会与 gum 冲突"
+            exit 1
+          fi
 
       - name: Diagnose gum symbols
         run: |
-          # 只做诊断不失败：gum 静态库内置一份 capstone，与仓库 x/capstone 同名符号
-          # 只在被同时链接时冲突。本项目只用到 memory/module/backthread，不引用
-          # stalker/relocator，理论上那些 .o 不会被拉入。这里把数量打出来便于排查。
+          # aiflex_hook 走 gum Interceptor，arm64 侧经 relocator 重定位被覆盖
+          # 的指令，relocator 直接引用 cs_arch_register_arm64 —— 这份 5.0.1
+          # 实现剥不掉，只能靠 flx6 前缀让 6.0 与之并存。
           echo "gum 内置 capstone 符号数:"
           nm -gU frida/vendor/libfrida-gum.a 2>/dev/null | grep -cE ' _cs_(open|close|disasm)$' || echo 0
           echo "gum 导出 gum_ 符号数:"

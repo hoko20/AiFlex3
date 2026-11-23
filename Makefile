@@ -1,6 +1,6 @@
 PACKAGE_IDENTIFIER = com.hoko20.aiflex3
 PACKAGE_NAME = AiFlex3
-PACKAGE_VERSION = 3.4.1
+PACKAGE_VERSION = 3.5.0
 PACKAGE_ARCHITECTURE = arm64
 PACKAGE_REVISION = 1
 PACKAGE_SECTION = Tweaks
@@ -46,20 +46,32 @@ $(LIBRARY_NAME)_FILES = $(shell find . \( -name '*.m' -o -name '*.mm' -o -name '
     grep -v "x/Shared/FLEXKeychain.m" | \
     grep -v "x/Shared/FLEXKeychainQuery.m" | \
     grep -v "x/capstone/" | \
+    grep -v "x/capstone6/" | \
     grep -v "frida/vendor/")
 
-# Capstone 只保留头文件，实现由 frida-gum 静态库提供。
+# 两套 Capstone 并存（3.5.0 起）：
 #
-# 原因：libfrida-gum.a 内置了一份完整 capstone 5.0.1（cs.c/Mapping/MCInst/arch_*），
-# 与仓库自己的 capstone 会全量重名，链接期必然 duplicate symbol。两边 ABI 又不同
-# （cs_detail 里 MAX_IMPL_W_REGS 是 47 vs 20、MAX_NUM_GROUPS 16 vs 8，union 偏移
-# 92 vs 154），所以既不能简单保留一份，也不能靠前缀重命名糊过去。
+#  5.0.1 —— 实现来自 libfrida-gum.a。aiflex_hook 走 gum Interceptor，arm64 侧
+#           经 relocator 重定位被覆盖的指令，而 relocator 硬引用
+#           cs_arch_register_arm64，这份实现剥不掉。
+#  6.0   —— 单独编成 libcapstone6.a，所有已定义的全局符号加 flx6 前缀。
+#           A19 Pro 的 SME2 / SVE2p1 / MTE4 指令只有 6.0（LLVM 17/18 解码表）
+#           能识别；5.0.1 是 LLVM 7 的表，这些扩展一个枚举都没有。
 #
-# 处置：把 x/capstone/include 降到 5.0.1（与 gum 内置版本一致），停止编译
-# x/capstone/*.c，x/Disassembler 改用 5.0 的 cs_arm64 API（#include <capstone/arm64.h>）。
-# 这样全进程只有一份 capstone 实现，且 UCDisassembler 用的头文件与实现同版本。
-# 6.0 源码（75 文件 / ~20 MB）已从树中删除，只留 include；需要时见 NOTICE 里的回滚说明。
+#  两者 cs_detail 布局不同（MAX_IMPL_W_REGS 47 vs 20、union 偏移 154 vs 92），
+#  所以不能共用一份实现；重名又会 duplicate symbol。前缀隔离后各自 ABI 自洽。
+#
+#  x/capstone/include 仍是 5.0.1 头（gum 侧用它）；UCDisassembler.m 用相对路径
+#  include x/capstone6/include 下的 6.0 头，两套头不在同一个 -I 搜索域里。
+#
+#  CI 先跑 scripts/build-capstone6.sh 生成 libcapstone6.a；本机没跑过该脚本时
+#  Makefile 自动降级回 5.0.1（UCDisassembler 里的 #ifdef 分支不会引用前缀符号）。
 CAPSTONE_INCLUDE = -I./x/capstone/include
+CAPSTONE6_LIB = $(CURDIR)/x/capstone6/lib/libcapstone6.a
+ifneq ($(wildcard $(CAPSTONE6_LIB)),)
+$(LIBRARY_NAME)_CFLAGS += -DAIFLEX_USE_CAPSTONE6
+$(LIBRARY_NAME)_LDFLAGS += $(CAPSTONE6_LIB)
+endif
 
 # 必要的框架和库
 $(LIBRARY_NAME)_FRAMEWORKS = Foundation UIKit CoreGraphics CoreFoundation Security Network
@@ -104,10 +116,10 @@ $(LIBRARY_NAME)_CFLAGS += -miphoneos-version-min=15.0
 # CI 会把 frida-gum-devkit 解压到 frida/vendor。本地没有 devkit 时定义 GX_NO_GUM，
 # 引擎降级为「仅 status / backtrace / crash_log 可用」，其余 operation 返回明确错误，
 # 构建照常通过——不会因为缺库把整条流水线拖红。
-# 注意：gum 的 capstone 与仓库头文件不同源——实现只有 gum 内置那一份。
+# 注意：gum 的 capstone 与仓库头文件不同源——gum 那份是 5.0.1 且剥不掉。
 # aiflex_hook 用到 gum Interceptor，arm64 侧会经 relocator 重定位被覆盖的指令，
-# 而 relocator 硬引用 `cs_arch_register_arm64`，所以那份 5.0.1 实现剥不掉。
-# 不要在树里再引入第二份 capstone 源码，否则立刻 duplicate symbol。
+# 而 relocator 硬引用 `cs_arch_register_arm64`。第二份实现（6.0）必须走
+# scripts/build-capstone6.sh 的 flx6 前缀隔离，直接加进 *_FILES 会立刻重名。
 FRIDA_VENDOR = ./frida/vendor
 ifneq ($(wildcard $(FRIDA_VENDOR)/libfrida-gum.a),)
 $(LIBRARY_NAME)_CFLAGS += -I$(FRIDA_VENDOR) -DGUM_STATIC

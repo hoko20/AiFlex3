@@ -53,12 +53,21 @@ build of that tag; rebuild instructions are the upstream releng scripts
 
 Capstone Engine
 
-The AArch64 disassembler is Capstone 5.0.1. FLEXAiFlexDisasm.m and
-x/Disassembler/UCDisassembler.m consume it through the copy embedded in the
-frida-gum static library (see the Frida entry above), so the whole process
-contains exactly one Capstone implementation.
+Two Capstone implementations are linked into this product, isolated by symbol
+prefix so each keeps its own ABI:
 
-https://github.com/capstone-engine/capstone
+* 5.0.1 — embedded in the frida-gum static library (see the Frida entry above).
+  frida-gum's arm64 relocator hard-references cs_arch_register_arm64, so this
+  copy cannot be stripped. All other consumers keep using it.
+* 6.0 — sources under x/capstone6/, compiled for AArch64 only by
+  scripts/build-capstone6.sh into libcapstone6.a. Its defined global symbols
+  are renamed with a `flx6` prefix via llvm-objcopy --redefine-sym; undefined
+  libc symbols stay untouched. x/Disassembler/UCDisassembler.m consumes this
+  copy through the prefixed API. Capstone 6 decodes SME2, SVE2p1, MTE4 and
+  Apple AMX instructions found on A19 Pro; 5.0.1's decoder table predates all
+  of those extensions.
+
+Both are Capstone, https://github.com/capstone-engine/capstone
 
 Copyright (c) 2013, COSEINC.
 All rights reserved.
@@ -88,16 +97,12 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 
 Note on version pinning: the headers under x/capstone/include are 5.0.1 to
-match the implementation embedded in frida-gum. They must not be bumped to
-6.x independently — Capstone 6 changed the internal layout of cs_detail
+match the implementation embedded in frida-gum. They must not be used with
+the 6.0 implementation — Capstone 6 changed the internal layout of cs_detail
 (MAX_IMPL_W_REGS 47 vs 20, MAX_NUM_GROUPS 16 vs 8, union offset 154 vs 92),
-so mixing 6.x headers with the 5.0.1 implementation silently misreads arm64
-operands.
+so mixing headers with the wrong implementation silently misreads arm64
+operands. UCDisassembler.m includes the 6.0 headers by relative path from
+x/capstone6/include so the two header sets never share an -I search domain.
 
-The 6.0 sources that used to sit under x/capstone/ (cs.c, Mapping.c,
-MCInst*.c, SStream.c, utils.c and arch/{AArch64,ARM}, 75 files / ~20 MB)
-were never compiled and have been removed from the tree. They remain in
-git history at commit 09cd3d6 if a future port wants them back — restoring
-would require prefixing their symbols (llvm-objcopy --prefix-symbols) since
-frida-gum's arm64 relocator hard-references its own 5.0.1 copy and cannot
-be stripped.
+The 6.0 sources were restored from git history (09cd3d6) into x/capstone6/
+in 3.5.0, now actively compiled with the flx6 symbol prefix described above.

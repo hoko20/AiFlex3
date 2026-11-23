@@ -8,3 +8,5 @@ packages/
 session/
 .workbuddy/
 frida/vendor/
+x/capstone6/.build/
+x/capstone6/lib/

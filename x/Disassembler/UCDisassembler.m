@@ -3,8 +3,32 @@
 #import <mach/mach.h>
 #import <mach/vm_map.h>
 #import <dlfcn.h>
+#ifdef AIFLEX_USE_CAPSTONE6
+// 6.0 实现由 scripts/build-capstone6.sh 编成 libcapstone6.a，全部全局符号加了
+// flx6 前缀，和 gum 内置那份 5.0.1 不重名。头文件走相对路径，避开全局 -I 里
+// 的 5.0.1 头——两套 cs_detail 布局不同，混用会静默读错 arm64 operands。
+// 下列宏必须在 include 之前，这样头里的声明也一起换名。
+#define cs_version   flx6_cs_version
+#define cs_open      flx6_cs_open
+#define cs_close     flx6_cs_close
+#define cs_option    flx6_cs_option
+#define cs_errno     flx6_cs_errno
+#define cs_strerror  flx6_cs_strerror
+#define cs_disasm    flx6_cs_disasm
+#define cs_free      flx6_cs_free
+#define cs_malloc    flx6_cs_malloc
+#define cs_reg_name  flx6_cs_reg_name
+#define cs_insn_name flx6_cs_insn_name
+#define cs_group_name flx6_cs_group_name
+#define cs_support   flx6_cs_support
+// 6.0 把 arm64 全改名 AArch64；打开兼容头才有 detail->arm64 / cs_arm64。
+#define CAPSTONE_AARCH64_COMPAT_HEADER 1
+#include "../capstone6/include/capstone/capstone.h"
+#include "../capstone6/include/capstone/arm64.h"
+#else
 #include <capstone/capstone.h>
 #include <capstone/arm64.h>
+#endif
 
 #pragma mark - 静态变量
 
