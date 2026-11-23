@@ -4,11 +4,12 @@
 
 ```
 包标识   com.hoko20.aiflex3
-版本     3.3.1
-产物     FLEX++-3.3.1-arm64-rootless.dylib
-        com.hoko20.aiflex3_3.3.1_iphoneos-arm64.deb
-目标     iOS 15.0+ / arm64 / 越狱（rootless，安装到 /var/jb）
-构建     Theos library，ldid 假签名
+版本     3.5.1
+产物     AiFlex2-FLEX++-3.5.1-arm64-rootless.dylib              （ldid 假签名，越狱注入）
+        AiFlex2-FLEX++-3.5.1-arm64-rootless-unsigned.dylib      （无签名，LiveContainer 用）
+        com.hoko20.aiflex3_3.5.1_iphoneos-arm64.deb
+目标     iOS 15.0+ / arm64 / 越狱（rootless，安装到 /var/jb）或 LiveContainer 侧载
+构建     Theos library，ldid 假签名（unsigned 变体除外）
 ```
 
 ## 1. 能力
@@ -41,12 +42,33 @@
 
 ```bash
 # 已构建的 deb
-dpkg -i com.hoko20.aiflex3_3.3.1_iphoneos-arm64.deb
+dpkg -i com.hoko20.aiflex3_3.5.1_iphoneos-arm64.deb
 # 或直接把 dylib 放进
-/var/jb/Library/MobileSubstrate/DynamicLibraries/FLEX++-3.3.1-arm64-rootless.dylib
+/var/jb/Library/MobileSubstrate/DynamicLibraries/FLEX++.dylib
+# 即把下载的 AiFlex2-FLEX++-3.5.1-arm64-rootless.dylib 改名为 FLEX++.dylib 后放入
 ```
 
 装完**重启目标 App**（不是重启桌面），FLEX 悬浮工具条上会出现 **AiFlex3** 按钮，点进去是控制面板。
+
+### 侧载 / LiveContainer（无越狱，iOS 26 起必需 JIT-less）
+
+artifact 里有两份 dylib，按注入方式选：
+
+| 产物 | 签名 | 用途 |
+|---|---|---|
+| `AiFlex2-FLEX++-<ver>-arm64-rootless.dylib` | `ldid -S` 假签名 | 传统越狱注入（MobileSubstrate / ElleKit）、deb 安装 |
+| `AiFlex2-FLEX++-<ver>-arm64-rootless-unsigned.dylib` | **无签名** | LiveContainer / 侧载注入器 |
+
+LiveContainer 必须用 **unsigned** 那份。原因：它的 Tweak Manager 靠"签名缺失或过期"来触发用你从 SideStore / AltStore 导入的证书重签 guest 和 tweak（JIT-less 模式下这是唯一合法的签名来源）。若导入带 ad-hoc 假签名的版本，LiveContainer 会误判为"已签好"而跳过重签，启动时 `dlopen` 报 `code signature invalid in <...> (errno=1)` —— **这正是"有些 App 正常、有些报错"的原因**：开了 JIT 的 guest 绕过了校验，JIT-less 的 guest 过不去。
+
+正确导入流程：
+
+1. LiveContainer → **Tweaks** 标签 → `+` → **Import Tweak** → 选 `*-unsigned.dylib`（不要直接用文件管理器拷进 `Documents/Tweaks`，那样不会走签名记录）。
+2. 若之前导入过带签名的旧版本，先删掉再重新导入；或在 Tweaks 标签点 **Sign** 强制重签。
+3. 确认已在 LiveContainer 设置里做过 **Import Certificate from SideStore**（JIT-less 必需，否则没有可用证书签名）。
+4. 分配到目标 App 的 Tweak Folder（全局目录对 guest 全开，app-specific 只对指定 App 生效）。
+
+> iOS 26 起 JIT 不可用，所有可执行文件都必须由 LiveContainer 用导入证书重签，因此 unsigned 产物是这一路径的唯一正确输入。传统越狱用户忽略本节，继续用带签名的那份。
 
 ## 3. 构建
 
@@ -55,7 +77,9 @@ dpkg -i com.hoko20.aiflex3_3.3.1_iphoneos-arm64.deb
 ```bash
 export THEOS=/opt/theos
 make clean package FINALPACKAGE=1 DEBUG=0 -j1
-# 产物：FLEX++-3.3.1-arm64-rootless.dylib + com.hoko20.aiflex3_3.3.1_iphoneos-arm64.deb
+# 产物：AiFlex2-FLEX++-3.5.1-arm64-rootless.dylib（签名）
+#       AiFlex2-FLEX++-3.5.1-arm64-rootless-unsigned.dylib（未签名，LiveContainer 用）
+#       com.hoko20.aiflex3_3.5.1_iphoneos-arm64.deb
 ```
 
 CI：`.github/workflows/build.yml`，push 到 `main` 自动在 `macos-latest` 上构建并上传 artifact `AiFlex3`。注意该 workflow 只拉取 Theos 的 `vendor/include`、`vendor/lib` 两个子模块（`vendor/orion` 已私有，不能全量 init）。

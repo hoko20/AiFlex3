@@ -125,6 +125,17 @@ jobs:
           echo "flx6 symbols via nm: $(nm -m "$DYLIB" 2>/dev/null | grep -c 'flx6_cs_' || true)"
           echo "flx6 names in strings: $(strings "$DYLIB" 2>/dev/null | grep -c 'flx6_cs_' || true)"
 
+      - name: Verify dylib signing variants
+        run: |
+          SIGNED=$(find . -maxdepth 1 -type f -name 'AiFlex2-FLEX++-*-rootless.dylib' | head -1)
+          UNSIGNED=$(find . -maxdepth 1 -type f -name 'AiFlex2-FLEX++-*-rootless-unsigned.dylib' | head -1)
+          test -n "$SIGNED" || { echo "signed dylib missing"; exit 1; }
+          test -n "$UNSIGNED" || { echo "unsigned dylib missing"; exit 1; }
+          echo "signed   : $SIGNED ($(stat -f%z "$SIGNED") bytes)"
+          echo "unsigned : $UNSIGNED ($(stat -f%z "$UNSIGNED") bytes)"
+          echo "signed   LC_CODE_SIGNATURE: $(grep -c 'LC_CODE_SIGNATURE' <(otool -l "$SIGNED" 2>/dev/null) || true)"
+          echo "unsigned LC_CODE_SIGNATURE: $(grep -c 'LC_CODE_SIGNATURE' <(otool -l "$UNSIGNED" 2>/dev/null) || true)"
+
       - name: List artifacts
         run: |
           ls -lh *.deb *.dylib

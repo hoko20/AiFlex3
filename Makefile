@@ -1,6 +1,6 @@
 PACKAGE_IDENTIFIER = com.hoko20.aiflex3
 PACKAGE_NAME = AiFlex3
-PACKAGE_VERSION = 3.5.1
+PACKAGE_VERSION = 3.5.2
 PACKAGE_ARCHITECTURE = arm64
 PACKAGE_REVISION = 1
 PACKAGE_SECTION = Tweaks
@@ -24,6 +24,9 @@ ARCHS = arm64
 
 # 名称和类型
 LIBRARY_NAME = FLEX++
+
+# 对外产物文件名加 AiFlex2 标识（内部 dylib 名仍为 FLEX++，Theos target 依赖它）
+ARTIFACT_BASE = AiFlex2-$(LIBRARY_NAME)-$(PACKAGE_VERSION)-$(PACKAGE_ARCHITECTURE)-rootless
 
 # 动态库类型 - 兼容各种越狱环境
 LIBRARY_TYPE = dynamic
@@ -138,9 +141,14 @@ include $(THEOS)/makefiles/common.mk
 include $(THEOS_MAKE_PATH)/library.mk
 
 after-stage::
+	# 产出两份 dylib：unsigned 版供 LiveContainer / 侧载注入器使用——它们靠
+	# "签名缺失/无效"触发用用户导入的证书重签（JIT-less 模式必需）；若带 ldid
+	# 假签名会被误判为已签好而跳过重签，dlopen 报 code signature invalid errno=1。
+	# staging 里的那份照常 ldid -S 签名，供 .deb 和传统越狱注入使用。
+	@cp "$(THEOS_STAGING_DIR)/var/jb/Library/MobileSubstrate/DynamicLibraries/$(LIBRARY_NAME).dylib" "$(THEOS_PACKAGE_DIR)/$(ARTIFACT_BASE)-unsigned.dylib"
 	@find "$(THEOS_STAGING_DIR)" -name "$(LIBRARY_NAME).dylib" -exec ldid -S {} \;
 	@mkdir -p "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex3"
 	@cp ThirdPartyNotices/NOTICE ThirdPartyNotices/DylixTouch-APACHE-2.0.txt "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex3/"
 
 after-package::
-	@cp "$(THEOS_STAGING_DIR)/var/jb/Library/MobileSubstrate/DynamicLibraries/$(LIBRARY_NAME).dylib" "$(THEOS_PACKAGE_DIR)/$(LIBRARY_NAME)-$(PACKAGE_VERSION)-$(PACKAGE_ARCHITECTURE)-rootless.dylib"
+	@cp "$(THEOS_STAGING_DIR)/var/jb/Library/MobileSubstrate/DynamicLibraries/$(LIBRARY_NAME).dylib" "$(THEOS_PACKAGE_DIR)/$(ARTIFACT_BASE).dylib"
