@@ -6,3 +6,4 @@ packages/
 *.o
 *.log
 session/
+.workbuddy/

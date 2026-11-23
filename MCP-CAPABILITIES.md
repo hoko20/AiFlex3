@@ -1,13 +1,13 @@
-# AiFlex2 MCP 能力说明（供 AI Agent 阅读）
+# AiFlex3 MCP 能力说明（供 AI Agent 阅读）
 
-> 适用版本：AiFlex2 2.0.0（内置 MCP build `2026-11-19-report`，含 `invoke_method` 与 `find_instances`）。
-> 本文档描述运行在宿主 App 进程内的 AiFlex2 MCP 服务。把本文件交给任意支持 MCP 的 AI，即可按这里的约定调用。
+> 适用版本：AiFlex3 3.0.0。
+> 本文档描述运行在宿主 App 进程内的 AiFlex3 MCP 服务。把本文件交给任意支持 MCP 的 AI，即可按这里的约定调用。
 
 ---
 
 ## 1. 它是什么
 
-AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 **Streamable HTTP MCP 服务**：
+AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 **Streamable HTTP MCP 服务**：
 
 - 运行在**目标 App 进程内部**，只能看到当前宿主 App 的界面、对象、网络、沙盒与设置。
 - 不是远程控制台，不会连接任何外部桌面 App。
@@ -21,7 +21,7 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ### 2.1 地址与客户端配置
 
-- 默认端点：`http://<手机局域网IP>:8790/mcp`
+- 默认端点：`http://<手机局域网IP>:8790/mcp`（`endpointHost` 默认取 `127.0.0.1`，跨机连接需在面板里改成手机局域网 IP）
 - 传输协议：Streamable HTTP（JSON-RPC 2.0）
 - 电脑与手机必须在同一局域网
 - 默认端口 8790，可在手机面板「服务设置」中修改
@@ -31,7 +31,7 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 ```json
 {
   "mcpServers": {
-    "aiflex2": {
+    "aiflex3": {
       "type": "http",
       "url": "http://192.168.1.10:8790/mcp",
       "headers": { "Authorization": "Bearer <访问令牌>" }
@@ -40,7 +40,7 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 }
 ```
 
-关闭「授权保护」后不需要 `headers`。授权码支持 8–64 位字母、数字、点、下划线和短横线，服务重启后旧令牌失效。
+关闭「授权保护」后不需要 `headers`。授权码支持 6–64 位字母、数字、点、下划线和短横线，服务重启后旧令牌失效。
 
 ### 2.2 工具组授权
 
@@ -97,7 +97,7 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
   "endpoint": "http://192.168.1.10:8790/mcp",
   "state": "运行中",
   "groups": { "read": true, "sensitive": false, "control": true },
-  "server": "AiFlex2 in-app",
+  "server": "AiFlex3 in-app",
   "build": "2026-11-19-report",
   "selectedObject": "UITableView"
 }
@@ -138,7 +138,7 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | `defaults_keys` | 无 | UserDefaults 键名，最多 100 个 |
 | `gesture_capabilities` | 无 | 手势后端是否可用、支持的类型 |
 | `tool_catalog` | 无 | FLEX 工具入口与当前版本能力 |
-| `chat_status` | 无 | AiFlex2 面板可见性、是否收起、`targetReady` |
+| `chat_status` | 无 | AiFlex3 面板可见性、是否收起、`targetReady` |
 
 ### 6.1 `find_instances` 的扫描范围
 
@@ -192,7 +192,7 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | `class_header` | `name`,`start_line`（默认 1）,`line_count`（1–120，默认 100） | 生成类头文件，单页不超过 96 KiB；返回 `next_line` |
 | `flex_ui_state` | 无 | FLEX 功能页的元素、文字摘要、可见行（`section`/`row`/`id`）、`canGoBack` |
 | `network_detail` | `id`（来自 `network_list`） | 单条请求详情，含最多 16 KiB 请求/响应正文 |
-| `network_export` | 无 | 把当前网络记录导出为 HAR 风格 JSON 到 `Documents/AiFlex2/`，返回相对路径 |
+| `network_export` | 无 | 把当前网络记录导出为 HAR 风格 JSON 到 `Documents/AiFlex3/`，返回相对路径 |
 | `sandbox_grep` | `path`,`query`,`limit`（1–200）,`case_sensitive` | 在 UTF-8 文本文件中按关键字搜索，返回命中行号与内容；单次最多扫描 8 MB |
 | `sandbox_read` | `path`,`offset`,`limit`,`tail` | 读取沙盒 UTF-8 文本；默认 128 KiB，上限 512 KiB；`tail=true` 读末尾且不能与 `offset` 同用 |
 | `defaults_get` | `key` | 单个 UserDefaults 值（最多 16000 字符） |
@@ -207,8 +207,8 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 | operation | 必需参数 | 说明 |
 |---|---|---|
-| `minimize_chat` | `surface`（`target`/`flex`） | 收起 AiFlex2 面板；`target` 同时隐藏 FLEX 工具栏，回到 App |
-| `restore_chat` | 无 | 重新显示 AiFlex2 面板 |
+| `minimize_chat` | `surface`（`target`/`flex`） | 收起 AiFlex3 面板；`target` 同时隐藏 FLEX 工具栏，回到 App |
+| `restore_chat` | 无 | 重新显示 AiFlex3 面板 |
 | `open_tool` | `tool_id` | 打开 `tool_catalog` 中的 FLEX 工具入口 |
 | `navigate_back` | 无 | FLEX 功能页返回上一级 |
 | `dismiss_tool` | 无 | 关闭当前 FLEX 工具页 |
@@ -352,7 +352,7 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 - 文档版本：2026-11-20（第三批能力）
 - 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息
-- 仓库：https://github.com/hoko20/AiFlex2
+- 仓库：https://github.com/hoko20/AiFlex3
 
 ---
 
@@ -395,7 +395,7 @@ AiFlex2 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 ```
 
 - `network_search` 只返回元数据，正文用 `network_detail`。
-- `network_export` 生成 `Documents/AiFlex2/network-<时间戳>.json`，最多 50 条，正文每条 16 KiB。
+- `network_export` 生成 `Documents/AiFlex3/network-<时间戳>.json`，最多 50 条，正文每条 16 KiB。
 - `sandbox_grep` 单次最多扫描文件前 8 MB；`truncatedFile=true` 表示文件更大。
 - 日志优先用 `sandbox_read(tail=true)` 看末尾，再按关键字 grep。
 

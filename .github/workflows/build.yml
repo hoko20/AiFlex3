@@ -1,4 +1,4 @@
-name: Build AiFlex2
+name: Build AiFlex3
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-aiflex2-${{ github.ref }}
+  group: build-aiflex3-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -40,7 +40,7 @@ jobs:
           echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/theos/vendor/dm.pl" >> "$GITHUB_PATH"
 
-      - name: Build AiFlex2
+      - name: Build AiFlex3
         run: make clean package FINALPACKAGE=1 DEBUG=0 -j1
 
       - name: List artifacts
@@ -50,7 +50,7 @@ jobs:
       - name: Upload dylib and deb
         uses: actions/upload-artifact@v4
         with:
-          name: AiFlex2
+          name: AiFlex3
           path: |
             *.deb
             *.dylib

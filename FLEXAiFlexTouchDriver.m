@@ -1,4 +1,4 @@
-// Copyright 2026 AiFlex2 contributors.
+// Copyright 2026 AiFlex3 contributors.
 // Event delivery design references KIF (Square) and Google EarlGrey.
 // Private UIKit/IOHID declarations and event composition are adapted from those
 // Apache-2.0 sources. See ThirdPartyNotices/DylixTouch-APACHE-2.0.txt and NOTICE.

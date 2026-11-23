@@ -1,17 +1,16 @@
-#import "FLEXAiFlex2ViewController.h"
+#import "FLEXAiFlex3ViewController.h"
 #import "FLEXAiFlexMCPServer.h"
 #import "FLEXAiFlexRuntime.h"
 #import "FLEXManager.h"
 #import "FLEXManager+Private.h"
 #import "FLEXUtility.h"
-#import "FLEXAiFlex2UI.h"
-#import "FLEXDylixChatViewController.h"
+#import "FLEXAiFlex3UI.h"
 
-static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
+static __weak FLEXAiFlex3ViewController *AXCurrentPanel;
 
 #pragma mark - Panel
 
-@interface FLEXAiFlex2ViewController ()
+@interface FLEXAiFlex3ViewController ()
 @property (nonatomic, copy) NSString *report;
 @property (nonatomic, copy) NSString *className;
 @property (nonatomic) BOOL minimized;
@@ -52,9 +51,9 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 - (BOOL)panelVisible;
 @end
 
-@implementation FLEXAiFlex2ViewController
+@implementation FLEXAiFlex3ViewController
 
-+ (instancetype)aiFlex2CurrentPanel { return AXCurrentPanel; }
++ (instancetype)aiFlex3CurrentPanel { return AXCurrentPanel; }
 
 - (instancetype)initWithReport:(NSString *)report className:(NSString *)className {
     self = [super initWithNibName:nil bundle:nil];
@@ -68,7 +67,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 - (void)viewDidLoad {
     [super viewDidLoad];
     AXCurrentPanel = self;
-    self.title = @"AiFlex2";
+    self.title = @"AiFlex3";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
 
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
@@ -245,7 +244,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     ]];
 
     UILabel *title = [UILabel new];
-    title.text = @"AiFlex2";
+    title.text = @"AiFlex3";
     title.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBold];
     title.textColor = UIColor.labelColor;
 
@@ -410,14 +409,6 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 - (AXGlassCard *)buildActionsCard {
     __weak typeof(self) weakSelf = self;
 
-    // 宿主内对话：聊天界面和轮询都留在当前进程里，AI 推理仍在 App 侧。
-    // 这样用户在宿主里就能看回复、看效果，不必来回切换导致进程被挂起。
-    AXRowView *chat = [self rowTitle:@"AI 对话（宿主内运行）"
-                            subtitle:@"聊天与工具执行都在当前 App 内，App 侧同一会话可见"
-                              symbol:@"bubble.left.and.bubble.right.fill" tint:UIColor.systemIndigoColor];
-    [chat setShowsChevron:YES];
-    chat.onTap = ^{ [weakSelf openChat]; };
-
     AXRowView *config = [self rowTitle:@"复制 MCP 客户端配置" subtitle:nil
                                 symbol:@"square.on.square" tint:UIColor.systemBlueColor];
     [config setShowsChevron:YES];
@@ -440,7 +431,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     [collapse setShowsChevron:YES];
     collapse.onTap = ^{ [weakSelf collapseTapped]; };
 
-    return [self cardWithRows:@[chat, config, enable, restart, collapse] radius:22];
+    return [self cardWithRows:@[config, enable, restart, collapse] radius:22];
 }
 
 - (UIView *)buildPermissionCard {
@@ -682,10 +673,10 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     NSString *url = [FLEXAiFlexMCPServer endpoint];
     NSString *json;
     if ([FLEXAiFlexMCPServer authRequired]) {
-        json = [NSString stringWithFormat:@"{\"mcpServers\":{\"aiflex2\":{\"type\":\"http\",\"url\":\"%@\",\"headers\":{\"Authorization\":\"Bearer %@\"}}}}",
+        json = [NSString stringWithFormat:@"{\"mcpServers\":{\"aiflex3\":{\"type\":\"http\",\"url\":\"%@\",\"headers\":{\"Authorization\":\"Bearer %@\"}}}}",
             url, [FLEXAiFlexMCPServer token]];
     } else {
-        json = [NSString stringWithFormat:@"{\"mcpServers\":{\"aiflex2\":{\"type\":\"http\",\"url\":\"%@\"}}}", url];
+        json = [NSString stringWithFormat:@"{\"mcpServers\":{\"aiflex3\":{\"type\":\"http\",\"url\":\"%@\"}}}", url];
     }
     [self copyText:json message:@"已复制 MCP 客户端配置"];
 }
@@ -826,17 +817,6 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     [self toast:message];
 }
 
-- (void)openChat {
-    FLEXDylixChatViewController *chat =
-        [[FLEXDylixChatViewController alloc] initWithReport:self.report className:self.className];
-    chat.selectedObject = self.selectedObject;
-    __weak typeof(self) weakSelf = self;
-    chat.reportProvider = ^NSString *{ return weakSelf.report ?: @""; };
-    // 先把视图建好再 push：否则转场动画的第一帧是空白页，看起来就是“闪一下”。
-    [chat loadViewIfNeeded];
-    [self.navigationController pushViewController:chat animated:YES];
-}
-
 - (void)restartService {
     [FLEXAiFlexMCPServer setEnabled:YES];
     [[FLEXAiFlexMCPServer shared] stop];
@@ -848,7 +828,7 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
 }
 
 - (void)collapseTapped {
-    // 只收起 AiFlex2 面板，保留 FLEX 悬浮工具条，方便继续在 App 里操作。
+    // 只收起 AiFlex3 面板，保留 FLEX 悬浮工具条，方便继续在 App 里操作。
     [self minimizeWithTarget:NO completion:nil];
 }
 
@@ -894,6 +874,9 @@ static __weak FLEXAiFlex2ViewController *AXCurrentPanel;
     return window != nil && !window.hidden && !self.navigationController.isBeingDismissed;
 }
 
+// MCP 契约里的 chat_status 只描述 AiFlex3 面板：chatVisible 表示面板可见，
+// minimized 表示面板已收起，targetReady 表示面板与 FLEX 覆盖层都不在目标界面上。
+// 字段名保持原样，已配置的 MCP 客户端不需要改调用方式。
 - (NSDictionary *)panelStatus {
     BOOL running = [[FLEXAiFlexMCPServer status] hasPrefix:@"运行中"];
     return @{

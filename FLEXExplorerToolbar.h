@@ -56,7 +56,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Toolbar item for app protection.
 @property (nonatomic, readonly) FLEXExplorerToolbarItem *protectionItem;
 
-/// Toolbar item for the AiFlex2 panel.
+/// Toolbar item for the AiFlex3 panel.
 @property (nonatomic, readonly) FLEXExplorerToolbarItem *aiFlexItem;
 
 /// A view for moving the entire toolbar.

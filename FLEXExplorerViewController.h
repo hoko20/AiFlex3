@@ -45,7 +45,7 @@
            animated:(BOOL)animated
          completion:(void (^)(void))completion;
 
-- (void)showAiFlex2PanelForObject:(id)object report:(NSString *)report className:(NSString *)className;
+- (void)showAiFlex3PanelForObject:(id)object report:(NSString *)report className:(NSString *)className;
 
 // Keyboard shortcut helpers
 

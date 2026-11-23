@@ -113,13 +113,13 @@
     dispatch_once(&onceToken, ^{
         NSDictionary<NSNumber *, NSArray<FLEXGlobalsEntry *> *> *rowsBySection = @{
             @(FLEXGlobalsSectionProcessAndEvents) : @[
-                [FLEXGlobalsEntry entryWithNameFuture:^{ return @"AiFlex2 面板"; }
+                [FLEXGlobalsEntry entryWithNameFuture:^{ return @"AiFlex3 面板"; }
                     action:^(__kindof UITableViewController *host) {
                         UIWindow *window = FLEXUtility.appKeyWindow;
                         NSString *name = window ? NSStringFromClass(window.class) : @"当前宿主";
                         NSString *report = [NSString stringWithFormat:@"App: %@\nCurrent window: %@\nOpen FLEX view hierarchy or select an object for more context.",
                             NSBundle.mainBundle.bundleIdentifier ?: @"unknown", name];
-                        [FLEXManager.sharedManager.explorerViewController showAiFlex2PanelForObject:window report:report className:name];
+                        [FLEXManager.sharedManager.explorerViewController showAiFlex3PanelForObject:window report:report className:name];
                     }],
                 [self globalsEntryForRow:FLEXGlobalsRowNetworkHistory],
                 [self globalsEntryForRow:FLEXGlobalsRowSystemLog],

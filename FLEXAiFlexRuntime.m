@@ -95,7 +95,7 @@ static NSDictionary *DXBody(NSData *body) {
  UIWindow *window=FLEXManager.sharedManager.explorerWindow;
  if(window.hidden)return nil;
  UIViewController *controller=[self visibleControllerInWindow:window path:[NSMutableArray new]];
- if([DXClass(controller) containsString:@"AiFlex2ViewController"])return nil;
+ if([DXClass(controller) containsString:@"AiFlex3ViewController"])return nil;
  return controller;
 }
 - (BOOL)allowsRowSelection:(UIViewController *)controller {
@@ -112,7 +112,7 @@ static NSDictionary *DXBody(NSData *body) {
 - (void)performGesture:(NSDictionary *)arguments completion:(void (^)(NSDictionary *,NSString *))completion {
  if(!self.touchDriver)self.touchDriver=[FLEXAiFlexTouchDriver new];
  if(self.touchDriver.running){completion(nil,@"另一个触摸序列仍在进行");return;}
- if(!FLEXManager.sharedManager.isHidden){completion(nil,@"FLEX 覆盖层仍可见。请先 minimize_chat(surface=target)，查询 chat_status.targetReady=true 后再操作，避免手势落在聊天或 FLEX 覆盖层");return;}
+ if(!FLEXManager.sharedManager.isHidden){completion(nil,@"FLEX 覆盖层仍可见。请先 minimize_chat(surface=target)，查询 chat_status.targetReady=true 后再操作，避免手势落在 FLEX 覆盖层");return;}
  NSString *kind=arguments[@"kind"];NSArray *kinds=@[@"tap",@"double_tap",@"long_press",@"swipe",@"drag",@"pinch",@"rotate"];
  id x=arguments[@"x"],y=arguments[@"y"];
  if(![kinds containsObject:kind]||![x isKindOfClass:NSNumber.class]||![y isKindOfClass:NSNumber.class]){completion(nil,@"手势类型和窗口坐标无效");return;}
@@ -728,13 +728,13 @@ static NSDictionary *DXBody(NSData *body) {
  if(!items.count){if(error)*error=@"当前没有网络记录可导出";return nil;}
  NSMutableArray *entries=[NSMutableArray new];
  for(FLEXHTTPTransaction *item in items){[entries addObject:[self networkRowForTransaction:item detail:YES]];}
- NSDictionary *payload=@{@"creator":@"AiFlex2",@"exportedAt":@(NSDate.date.timeIntervalSince1970),@"bundleID":NSBundle.mainBundle.bundleIdentifier?:@"",@"entries":entries};
+ NSDictionary *payload=@{@"creator":@"AiFlex3",@"exportedAt":@(NSDate.date.timeIntervalSince1970),@"bundleID":NSBundle.mainBundle.bundleIdentifier?:@"",@"entries":entries};
  NSData *json=[NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
  if(!json){if(error)*error=@"网络记录无法序列化";return nil;}
- NSString *directory=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/AiFlex2"];
+ NSString *directory=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/AiFlex3"];
  if(![NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil]){if(error)*error=@"无法创建导出目录";return nil;}
  NSString *name=[NSString stringWithFormat:@"network-%.0f.json",NSDate.date.timeIntervalSince1970*1000];
- NSString *path=[directory stringByAppendingPathComponent:name];NSString *relative=[@"Documents/AiFlex2" stringByAppendingPathComponent:name];
+ NSString *path=[directory stringByAppendingPathComponent:name];NSString *relative=[@"Documents/AiFlex3" stringByAppendingPathComponent:name];
  if(![json writeToFile:path atomically:YES]){if(error)*error=@"导出文件写入失败";return nil;}
  return @{@"path":relative,@"entries":@(entries.count),@"bytes":@(json.length)};
 }
@@ -1258,7 +1258,7 @@ static NSDictionary *DXBody(NSData *body) {
   NSString *liveText=data?[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding]:@"";
   NSString *name=self.contextClassName.length?self.contextClassName:(live[@"selectedObject"][@"class"]?:@"未知对象");
   if(!base.length){
-   base=[NSString stringWithFormat:@"App: %@\nCurrent FLEX selection: %@\nUse this runtime evidence to locate the UI owner and implement the requested behavior in the AiFlex2 plugin project. A temporary FLEX view change is not a plugin implementation.",
+   base=[NSString stringWithFormat:@"App: %@\nCurrent FLEX selection: %@\nUse this runtime evidence to locate the UI owner and implement the requested behavior in the AiFlex3 plugin project. A temporary FLEX view change is not a plugin implementation.",
     NSBundle.mainBundle.bundleIdentifier?:@"unknown",name?:@"当前宿主"];
   }
   NSString *text=[NSString stringWithFormat:@"%@\nCurrent FLEX runtime: %@",base,liveText?:@""];

@@ -330,10 +330,10 @@ static void FLEXInstallListCallbackHook(Class cls, SEL selector, IMP wrapper) {
         make.button(@"分享插件数据").handler(^(NSArray<NSString *> *strings) {
             [self shareRuntimeReportFromSender:sender];
         });
-        make.button(@"用 AiFlex2 查看当前对象").handler(^(NSArray<NSString *> *strings) {
+        make.button(@"用 AiFlex3 查看当前对象").handler(^(NSArray<NSString *> *strings) {
             NSString *name=[FLEXRuntimeUtility safeClassNameForObject:self.object] ?: @"未知对象";
-            NSString *report=[self aiFlex2Report];
-            [FLEXManager.sharedManager.explorerViewController showAiFlex2PanelForObject:self.object report:report className:name];
+            NSString *report=[self aiFlex3Report];
+            [FLEXManager.sharedManager.explorerViewController showAiFlex3PanelForObject:self.object report:report className:name];
         });
         make.button(@"采集列表行为（8秒）").handler(^(NSArray<NSString *> *strings) {
             [self startListCallbackCaptureFromSender:sender];
@@ -342,7 +342,7 @@ static void FLEXInstallListCallbackHook(Class cls, SEL selector, IMP wrapper) {
     } showFrom:self source:sender];
 }
 
-- (NSString *)aiFlex2Report {
+- (NSString *)aiFlex3Report {
     NSMutableString *report=[NSMutableString stringWithFormat:@"Class: %@\nDescription: %@\n%@\n", [FLEXRuntimeUtility safeClassNameForObject:self.object] ?: @"未知对象", self.explorer.objectDescription ?: @"", [self runtimeContextReportForObject:self.object] ?: @""];
     [self appendMetadata:@[self.explorer.properties] title:@"Properties" target:self.object toReport:report includeValues:NO];
     [self appendMetadata:@[self.explorer.ivars] title:@"Instance Variables" target:self.object toReport:report includeValues:NO];

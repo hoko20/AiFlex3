@@ -1,24 +1,24 @@
-PACKAGE_IDENTIFIER = com.hoko20.aiflex2
-PACKAGE_NAME = AiFlex2
-PACKAGE_VERSION = 2.3.17
+PACKAGE_IDENTIFIER = com.hoko20.aiflex3
+PACKAGE_NAME = AiFlex3
+PACKAGE_VERSION = 3.0.0
 PACKAGE_ARCHITECTURE = arm64
 PACKAGE_REVISION = 1
 PACKAGE_SECTION = Tweaks
 PACKAGE_DEPENDS = firmware (>= 15.0)
-PACKAGE_DESCRIPTION = FLEX调试工具 · AiFlex2 MCP
+PACKAGE_DESCRIPTION = FLEX调试工具 · AiFlex3 MCP
 
-define Package/com.hoko20.aiflex2
-  Package: com.hoko20.aiflex2
-  Name: AiFlex2
+define Package/com.hoko20.aiflex3
+  Package: com.hoko20.aiflex3
+  Name: AiFlex3
   Version: $(PACKAGE_VERSION)
   Architecture: arm64
   Author: FLEX Team & hoko20
   Section: Tweaks
   Depends: firmware (>= 15.0)
-  Description: FLEX调试工具 · AiFlex2 MCP
+  Description: FLEX调试工具 · AiFlex3 MCP
 endef
 
-# 支持更旧版本的iOS设备(从15.6降到15.0，AiFlex2 MCP 要求 iOS 15+)
+# 支持更旧版本的iOS设备(从15.6降到15.0，AiFlex3 MCP 要求 iOS 15+)
 TARGET = iphone:latest:15.0
 ARCHS = arm64
 
@@ -96,8 +96,8 @@ include $(THEOS_MAKE_PATH)/library.mk
 
 after-stage::
 	@find "$(THEOS_STAGING_DIR)" -name "$(LIBRARY_NAME).dylib" -exec ldid -S {} \;
-	@mkdir -p "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex2"
-	@cp ThirdPartyNotices/NOTICE ThirdPartyNotices/DylixTouch-APACHE-2.0.txt "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex2/"
+	@mkdir -p "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex3"
+	@cp ThirdPartyNotices/NOTICE ThirdPartyNotices/DylixTouch-APACHE-2.0.txt "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex3/"
 
 after-package::
 	@cp "$(THEOS_STAGING_DIR)/var/jb/Library/MobileSubstrate/DynamicLibraries/$(LIBRARY_NAME).dylib" "$(THEOS_PACKAGE_DIR)/$(LIBRARY_NAME)-$(PACKAGE_VERSION)-$(PACKAGE_ARCHITECTURE)-rootless.dylib"

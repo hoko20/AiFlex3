@@ -1,9 +1,9 @@
-Package: com.hoko20.aiflex2
-Name: AiFlex2
+Package: com.hoko20.aiflex3
+Name: AiFlex3
 Maintainer: hoko20
-Version: 2.3.17
+Version: 3.0.0
 Architecture: iphoneos-arm64
-Description: FLEX调试工具 · AiFlex2 MCP
+Description: FLEX调试工具 · AiFlex3 MCP
 Author: FLEX Team & hoko20
 Section: Tweaks
 Depends: firmware (>= 15.0), mobilesubstrate

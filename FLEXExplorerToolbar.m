@@ -99,7 +99,7 @@
         self.decryptItem    = [FLEXExplorerToolbarItem itemWithTitle:@"抓取" image:[UIImage systemImageNamed:@"lock.open.fill"]];
         self.filzaItem      = [FLEXExplorerToolbarItem itemWithTitle:@"Filza" image:[UIImage systemImageNamed:@"folder.fill"]];
         self.protectionItem = [FLEXExplorerToolbarItem itemWithTitle:@"保护" image:[UIImage systemImageNamed:@"shield.fill"]];
-        self.aiFlexItem = [FLEXExplorerToolbarItem itemWithTitle:@"AiFlex2" image:[UIImage systemImageNamed:@"sparkles"]];
+        self.aiFlexItem = [FLEXExplorerToolbarItem itemWithTitle:@"AiFlex3" image:[UIImage systemImageNamed:@"sparkles"]];
 
         // Selected view box //
         

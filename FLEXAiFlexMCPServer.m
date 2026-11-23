@@ -1,7 +1,6 @@
 #import "FLEXAiFlexMCPServer.h"
 #import "FLEXAiFlexRuntime.h"
-#import "FLEXAiFlex2ViewController.h"
-#import "FLEXDylixChatViewController.h"
+#import "FLEXAiFlex3ViewController.h"
 #import "FLEXManager+Private.h"
 #import <Network/Network.h>
 #import <Security/Security.h>
@@ -77,7 +76,7 @@ static BOOL GroupEnabled(NSString *group){
  if([group isEqual:@"tracing"])return [FLEXAiFlexMCPServer tracingEnabled];
  return NO;
 }
-// Window operations belong to FLEXAiFlex2ViewController; everything else is
+// Window operations belong to FLEXAiFlex3ViewController; everything else is
 // executed by FLEXAiFlexRuntime.
 static BOOL WindowOperation(NSString *operation){
  static NSSet *operations;static dispatch_once_t once;
@@ -85,7 +84,7 @@ static BOOL WindowOperation(NSString *operation){
  return [operations containsObject:operation];
 }
 static NSString *Instructions(void){
- return @"你通过 AiFlex2 直连当前注入的 App。先调用 aiflex_read(operation=capabilities)、current 和 report，核对 bundleID、当前页面、选中对象与可用操作；连接配置存在不代表目标在线。选中对象为空不妨碍用 screen_elements / view_tree 自主观察，不要只凭最后点选的控件猜界面。\n需要操作目标页面时，若 FLEX 或聊天覆盖层可见，先调用 aiflex_control(operation=minimize_chat, surface=target)，再读 screen_elements 和截图；状态悬浮球不是业务控件。截图用 aiflex_sensitive(operation=capture_screen)；返回截图不代表模型一定收到图像。\n只使用真实返回的 id/frame/窗口坐标，导航后重新读取，不连续重试过期 id。activate_control 的支持范围以返回为准，不支持时可在 gesture_capabilities 确认后端可用并获授权后使用 gesture。需要触发业务方法或已存在的 Hook 时，可用 aiflex_control(operation=invoke_method, selector=..., arguments=[...])；传 id 指定实时对象，或传 class 调用类方法，不传则用当前选中对象。返回对象时会给出 returnId，可继续用 aiflex_read(operation=object_info, id=returnId) 读取实例数据，或用 invoke_method(id=returnId) 调实例方法。需要查找当前界面里某个类的已有实例，用 aiflex_read(operation=find_instances, class=...)，返回的 id 同样可继续使用；非界面对象不做堆扫描。参数仅支持字符串、数字、布尔、null、数组和字典，最多 8 个；调用会执行真实副作用，是否触发 Hook 取决于目标实现，调用后重新读取现场。delivered、dispatched、scrolled 不是业务成功证明，操作后核对 controllerPath、控件文字/位置、contentOffset 和新截图；滚动 delta=0 要报告未滚动。切页前记录恢复路径，结束后 restore_chat。\n稳定 Hook 证据：object_info + view_tree + class_info；头文件用 aiflex_sensitive(operation=class_header) 的 name/start_line/line_count 分页。区分当前对象、交互父容器、业务祖先、最近 responder controller 和声明所属镜像；hookEvidence 的声明候选、executionObserved、stabilityVerified 分开解释，未观测执行不能称为已验证生命周期。\nset_view / undo 仅作临时现场验证，需授权并复查；持久修改要写进工程并构建，不能用临时隐藏冒充插件功能。\n定位文字用 aiflex_read(operation=find_text, query=...) 或 screen_texts；点击文字用 aiflex_control(operation=tap_text, query=...)；读实例字段值用 object_properties；日志搜索用 aiflex_sensitive(operation=sandbox_grep, path=..., query=...)；对比操作前后用 aiflex_read(operation=snapshot, action=save/diff)。脚本仅在手机端开启「脚本执行」后用 aiflex_script(operation=run_js, code=...)，只影响 WKWebView。方法追踪仅在开启「方法追踪」后用 aiflex_trace(operation=start/stop/read/clear, class=..., selector=...)，它替换方法实现并记录调用，可能崩溃或卡顿，10 分钟自动停止，不要对高频方法开启。需要等待页面变化时用 aiflex_read(operation=wait_for, condition=text_exists, query=..., timeout=...)，不要空转重复读取；列表内容在屏幕外时用 aiflex_control(operation=scroll_to_text, query=...)；点不动先查 aiflex_read(operation=controller_stack) 确认是否有模态遮挡；环境信息用 app_info / device_info；view_tree 支持 class_filter、text_filter、max_depth、interactive_only、include_hidden。\n日志：先 sandbox_list 取真实相对路径和大小，再 aiflex_sensitive(operation=sandbox_read, path=...)，默认 128 KiB、limit 最高 524288；优先 tail=true 读末尾，tail 不与 offset 同传；续读用 next_offset，检查 has_more、totalBytes、modifiedAt。网络详情、defaults、文件和钥匙串元数据只在授权范围内读取，不复述秘密。报告工具失败、空结果、未测项和真实截图状态，不凭配置声称功能正常。";
+ return @"你通过 AiFlex3 直连当前注入的 App。先调用 aiflex_read(operation=capabilities)、current 和 report，核对 bundleID、当前页面、选中对象与可用操作；连接配置存在不代表目标在线。选中对象为空不妨碍用 screen_elements / view_tree 自主观察，不要只凭最后点选的控件猜界面。\n需要操作目标页面时，若 FLEX 覆盖层可见，先调用 aiflex_control(operation=minimize_chat, surface=target)，再读 screen_elements 和截图；截图用 aiflex_sensitive(operation=capture_screen)；返回截图不代表模型一定收到图像。\n只使用真实返回的 id/frame/窗口坐标，导航后重新读取，不连续重试过期 id。activate_control 的支持范围以返回为准，不支持时可在 gesture_capabilities 确认后端可用并获授权后使用 gesture。需要触发业务方法或已存在的 Hook 时，可用 aiflex_control(operation=invoke_method, selector=..., arguments=[...])；传 id 指定实时对象，或传 class 调用类方法，不传则用当前选中对象。返回对象时会给出 returnId，可继续用 aiflex_read(operation=object_info, id=returnId) 读取实例数据，或用 invoke_method(id=returnId) 调实例方法。需要查找当前界面里某个类的已有实例，用 aiflex_read(operation=find_instances, class=...)，返回的 id 同样可继续使用；非界面对象不做堆扫描。参数仅支持字符串、数字、布尔、null、数组和字典，最多 8 个；调用会执行真实副作用，是否触发 Hook 取决于目标实现，调用后重新读取现场。delivered、dispatched、scrolled 不是业务成功证明，操作后核对 controllerPath、控件文字/位置、contentOffset 和新截图；滚动 delta=0 要报告未滚动。切页前记录恢复路径，结束后 restore_chat。\n稳定 Hook 证据：object_info + view_tree + class_info；头文件用 aiflex_sensitive(operation=class_header) 的 name/start_line/line_count 分页。区分当前对象、交互父容器、业务祖先、最近 responder controller 和声明所属镜像；hookEvidence 的声明候选、executionObserved、stabilityVerified 分开解释，未观测执行不能称为已验证生命周期。\nset_view / undo 仅作临时现场验证，需授权并复查；持久修改要写进工程并构建，不能用临时隐藏冒充插件功能。\n定位文字用 aiflex_read(operation=find_text, query=...) 或 screen_texts；点击文字用 aiflex_control(operation=tap_text, query=...)；读实例字段值用 object_properties；日志搜索用 aiflex_sensitive(operation=sandbox_grep, path=..., query=...)；对比操作前后用 aiflex_read(operation=snapshot, action=save/diff)。脚本仅在手机端开启「脚本执行」后用 aiflex_script(operation=run_js, code=...)，只影响 WKWebView。方法追踪仅在开启「方法追踪」后用 aiflex_trace(operation=start/stop/read/clear, class=..., selector=...)，它替换方法实现并记录调用，可能崩溃或卡顿，10 分钟自动停止，不要对高频方法开启。需要等待页面变化时用 aiflex_read(operation=wait_for, condition=text_exists, query=..., timeout=...)，不要空转重复读取；列表内容在屏幕外时用 aiflex_control(operation=scroll_to_text, query=...)；点不动先查 aiflex_read(operation=controller_stack) 确认是否有模态遮挡；环境信息用 app_info / device_info；view_tree 支持 class_filter、text_filter、max_depth、interactive_only、include_hidden。\n日志：先 sandbox_list 取真实相对路径和大小，再 aiflex_sensitive(operation=sandbox_read, path=...)，默认 128 KiB、limit 最高 524288；优先 tail=true 读末尾，tail 不与 offset 同传；续读用 next_offset，检查 has_more、totalBytes、modifiedAt。网络详情、defaults、文件和钥匙串元数据只在授权范围内读取，不复述秘密。报告工具失败、空结果、未测项和真实截图状态，不凭配置声称功能正常。";
 }
 static NSArray<NSDictionary *> *Tools(void){ static NSArray *tools;static dispatch_once_t once;
  dispatch_once(&once,^{
@@ -318,7 +317,7 @@ static NSString *LocalIPv4(void){
 - (void)beginBackgroundLease{
  if(self.lease!=UIBackgroundTaskInvalid)return;
  __weak typeof(self) weak=self;
- self.lease=[UIApplication.sharedApplication beginBackgroundTaskWithName:@"AiFlex2 MCP"
+ self.lease=[UIApplication.sharedApplication beginBackgroundTaskWithName:@"AiFlex3 MCP"
    expirationHandler:^{ [weak endBackgroundLease]; }];
 }
 
@@ -506,7 +505,7 @@ static BOOL PrivateIPv4(uint32_t host){
    if(state==nw_connection_state_failed||state==nw_connection_state_cancelled)[weak close:connection];
   });
   nw_connection_start(connection);
-  [self respond:connection status:403 headers:@{} body:[@"仅接受本机或局域网地址：请使用 AiFlex2 面板上的实际局域网地址，不要经过公网转发或反向代理。" dataUsingEncoding:NSUTF8StringEncoding]];
+  [self respond:connection status:403 headers:@{} body:[@"仅接受本机或局域网地址：请使用 AiFlex3 面板上的实际局域网地址，不要经过公网转发或反向代理。" dataUsingEncoding:NSUTF8StringEncoding]];
   return;
  }
  if(self.connections.count>=8){nw_connection_cancel(connection);return;}
@@ -572,7 +571,7 @@ static BOOL PrivateIPv4(uint32_t host){
  if([FLEXAiFlexMCPServer authRequired]){
   NSString *authorization=request[@"headers"][@"authorization"];
   NSString *token=[authorization.lowercaseString hasPrefix:@"bearer "]?[authorization substringFromIndex:7]:nil;
-  if(!token.length||!Same(token,[FLEXAiFlexMCPServer token])){[self respond:connection status:401 headers:@{@"WWW-Authenticate":@"Bearer realm=\"AiFlex2 MCP\""} body:[@"Unauthorized" dataUsingEncoding:NSUTF8StringEncoding]];return;}
+  if(!token.length||!Same(token,[FLEXAiFlexMCPServer token])){[self respond:connection status:401 headers:@{@"WWW-Authenticate":@"Bearer realm=\"AiFlex3 MCP\""} body:[@"Unauthorized" dataUsingEncoding:NSUTF8StringEncoding]];return;}
  }
  id body=[NSJSONSerialization JSONObjectWithData:request[@"body"]?:NSData.data options:0 error:nil];
  if(![body isKindOfClass:NSDictionary.class]){[self respond:connection status:400 headers:@{} body:[@"JSON 解析失败" dataUsingEncoding:NSUTF8StringEncoding]];return;}
@@ -586,7 +585,7 @@ static BOOL PrivateIPv4(uint32_t host){
   NSString *requested=params[@"protocolVersion"];
   NSString *version=[requested isKindOfClass:NSString.class]&&[@[@"2025-06-18",@"2025-03-26",@"2024-11-05"] containsObject:requested]?requested:DXMCPVersion;
   NSString *appVersion=[NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] isKindOfClass:NSString.class]?NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"]:@"dev";
-  NSDictionary *response=HTTPJSON(200,RPC(identifier,@{@"protocolVersion":version,@"capabilities":@{@"tools":@{@"listChanged":@NO}},@"serverInfo":@{@"name":@"AiFlex2",@"version":appVersion},@"instructions":Instructions()}),@{@"Mcp-Session-Id":NSUUID.UUID.UUIDString});
+  NSDictionary *response=HTTPJSON(200,RPC(identifier,@{@"protocolVersion":version,@"capabilities":@{@"tools":@{@"listChanged":@NO}},@"serverInfo":@{@"name":@"AiFlex3",@"version":appVersion},@"instructions":Instructions()}),@{@"Mcp-Session-Id":NSUUID.UUID.UUIDString});
   [self sendResponse:response connection:connection];return;
  }
  if([method isEqual:@"ping"]){[self sendResponse:HTTPJSON(200,RPC(identifier,@{}),nil) connection:connection];return;}
@@ -623,7 +622,7 @@ static BOOL PrivateIPv4(uint32_t host){
  if(!enabled){completion(ToolError(@"工具不存在或已在 FLEX 设置中关闭"));return;}
  if([name isEqual:@"aiflex_status"]){
   NSString *bundle=NSBundle.mainBundle.bundleIdentifier?:@"";
-  NSDictionary *status=@{@"bundleID":bundle,@"endpoint":[FLEXAiFlexMCPServer endpoint],@"state":[FLEXAiFlexMCPServer status],@"groups":@{@"read":@YES,@"sensitive":@([FLEXAiFlexMCPServer sensitiveEnabled]),@"control":@([FLEXAiFlexMCPServer controlEnabled]),@"script":@([FLEXAiFlexMCPServer scriptEnabled]),@"tracing":@([FLEXAiFlexMCPServer tracingEnabled])},@"server":@"AiFlex2 in-app",@"build":[NSString stringWithFormat:@"%@ (%@)",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]?:@"unknown",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]?:@"-"],@"selectedObject":([FLEXAiFlexRuntime sharedRuntime].selectedObject?NSStringFromClass([[FLEXAiFlexRuntime sharedRuntime].selectedObject class]):@"未选中")};
+  NSDictionary *status=@{@"bundleID":bundle,@"endpoint":[FLEXAiFlexMCPServer endpoint],@"state":[FLEXAiFlexMCPServer status],@"groups":@{@"read":@YES,@"sensitive":@([FLEXAiFlexMCPServer sensitiveEnabled]),@"control":@([FLEXAiFlexMCPServer controlEnabled]),@"script":@([FLEXAiFlexMCPServer scriptEnabled]),@"tracing":@([FLEXAiFlexMCPServer tracingEnabled])},@"server":@"AiFlex3 in-app",@"build":[NSString stringWithFormat:@"%@ (%@)",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]?:@"unknown",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]?:@"-"],@"selectedObject":([FLEXAiFlexRuntime sharedRuntime].selectedObject?NSStringFromClass([[FLEXAiFlexRuntime sharedRuntime].selectedObject class]):@"未选中")};
   completion(TextContent(status,NO));return;
  }
  NSDictionary *properties=tool[@"schema"][@"properties"];
@@ -681,23 +680,16 @@ static BOOL PrivateIPv4(uint32_t host){
  }
  if(WindowOperation(operation)){
   dispatch_async(dispatch_get_main_queue(),^{
-   // 聊天页优先：宿主内对话开着时，minimize_chat/restore_chat 应该作用在聊天窗上，
-   // 而不是背后的面板，否则 AI 想最小化聊天界面却收起了面板。
-   FLEXDylixChatViewController *chat=[FLEXDylixChatViewController dylixCurrentChat];
-   if(chat){
-    [chat performWindowOperation:operation arguments:wire completion:^(NSDictionary *result,NSString *error){
-     dispatch_async(self.queue,^{completion(error.length?ToolError(error):FlexContent(result));});
-    }];
-    return;
-   }
-   FLEXAiFlex2ViewController *panel=[FLEXAiFlex2ViewController aiFlex2CurrentPanel];
+   // 窗口操作只属于 AiFlex3 面板：面板自己持有 minimize/restore/open_tool/返回/关闭，
+   // 以及 chat_status（面板可见性 + FLEX 覆盖层状态）。
+   FLEXAiFlex3ViewController *panel=[FLEXAiFlex3ViewController aiFlex3CurrentPanel];
    if(!panel){
     if([operation isEqual:@"chat_status"]){
      NSDictionary *state=@{@"chatVisible":@NO,@"minimized":@NO,@"connected":@NO,@"taskRunning":@NO,@"stopped":@NO,@"sessionID":@"",@"flexVisible":@(!FLEXManager.sharedManager.isHidden),@"targetReady":@(FLEXManager.sharedManager.isHidden),@"statusVisible":@NO,@"activity":@"",@"uiTransitioning":@NO};
      dispatch_async(self.queue,^{completion(TextContent(state,NO));});
      return;
     }
-    dispatch_async(self.queue,^{completion(ToolError(@"请先打开 AiFlex2 面板（FLEX 工具栏 AiFlex2 按钮）后再使用窗口控制"));});
+    dispatch_async(self.queue,^{completion(ToolError(@"请先打开 AiFlex3 面板（FLEX 工具栏 AiFlex3 按钮）后再使用窗口控制"));});
     return;
    }
    [panel performWindowOperation:operation arguments:wire completion:^(NSDictionary *result,NSString *error){

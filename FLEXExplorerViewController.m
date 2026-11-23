@@ -20,7 +20,7 @@
 #import "FLEXTabsViewController.h"
 #import "FLEXWindowManagerController.h"
 #import "FLEXViewControllersViewController.h"
-#import "FLEXAiFlex2ViewController.h"
+#import "FLEXAiFlex3ViewController.h"
 #import "FLEXAiFlexRuntime.h"
 #import "NSUserDefaults+FLEX.h"
 
@@ -265,7 +265,7 @@ typedef NS_ENUM(NSUInteger, FLEXExplorerMode) {
     }
     NSString *name = NSStringFromClass([selectedView class]);
     runtime.contextClassName = name;
-    runtime.contextReport = [NSString stringWithFormat:@"App: %@\nCurrent FLEX selection: %@\nUse this runtime evidence to locate the UI owner and implement the requested behavior in the AiFlex2 plugin project. A temporary FLEX view change is not a plugin implementation.",
+    runtime.contextReport = [NSString stringWithFormat:@"App: %@\nCurrent FLEX selection: %@\nUse this runtime evidence to locate the UI owner and implement the requested behavior in the AiFlex3 plugin project. A temporary FLEX view change is not a plugin implementation.",
         NSBundle.mainBundle.bundleIdentifier ?: @"unknown", name];
 }
 
@@ -413,7 +413,7 @@ typedef NS_ENUM(NSUInteger, FLEXExplorerMode) {
     [toolbar.decryptItem addTarget:self action:@selector(decryptButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
     [toolbar.filzaItem addTarget:self action:@selector(filzaButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
     [toolbar.protectionItem addTarget:self action:@selector(protectionButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [toolbar.aiFlexItem addTarget:self action:@selector(aiFlex2ButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [toolbar.aiFlexItem addTarget:self action:@selector(aiFlex3ButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
 }
 
 - (void)selectButtonTapped:(FLEXExplorerToolbarItem *)sender {
@@ -584,24 +584,24 @@ typedef NS_ENUM(NSUInteger, FLEXExplorerMode) {
     [UCAppProtectionTool presentProtectionPanelFromViewController:self completion:nil];
 }
 
-- (void)aiFlex2ButtonTapped:(FLEXExplorerToolbarItem *)sender {
+- (void)aiFlex3ButtonTapped:(FLEXExplorerToolbarItem *)sender {
     id object = self.selectedView ?: FLEXUtility.appKeyWindow;
     NSString *name = object ? NSStringFromClass([object class]) : @"当前宿主";
-    NSString *report = [NSString stringWithFormat:@"App: %@\nCurrent FLEX selection: %@\nUse this runtime evidence to locate the UI owner and implement the requested behavior in the AiFlex2 project. A temporary FLEX view change is not a plugin implementation.",
+    NSString *report = [NSString stringWithFormat:@"App: %@\nCurrent FLEX selection: %@\nUse this runtime evidence to locate the UI owner and implement the requested behavior in the AiFlex3 project. A temporary FLEX view change is not a plugin implementation.",
         NSBundle.mainBundle.bundleIdentifier ?: @"unknown", name];
-    [self showAiFlex2PanelForObject:object report:report className:name];
+    [self showAiFlex3PanelForObject:object report:report className:name];
 }
 
-- (void)showAiFlex2PanelForObject:(id)object report:(NSString *)report className:(NSString *)name {
+- (void)showAiFlex3PanelForObject:(id)object report:(NSString *)report className:(NSString *)name {
     if (!self.aiFlexNavigation) {
-        FLEXAiFlex2ViewController *panel = [[FLEXAiFlex2ViewController alloc] initWithReport:report className:name];
+        FLEXAiFlex3ViewController *panel = [[FLEXAiFlex3ViewController alloc] initWithReport:report className:name];
         panel.selectedObject = object;
         self.aiFlexNavigation = [[UINavigationController alloc] initWithRootViewController:panel];
         self.aiFlexNavigation.modalPresentationStyle = UIModalPresentationFullScreen;
         // 只声明状态栏由本面板决定；导航栏/按钮外观保持系统默认，iOS 26 下即为液态玻璃。
         self.aiFlexNavigation.modalPresentationCapturesStatusBarAppearance = YES;
     } else {
-        FLEXAiFlex2ViewController *panel = (FLEXAiFlex2ViewController *)self.aiFlexNavigation.viewControllers.firstObject;
+        FLEXAiFlex3ViewController *panel = (FLEXAiFlex3ViewController *)self.aiFlexNavigation.viewControllers.firstObject;
         [panel updateReport:report className:name selectedObject:object];
     }
     [self presentTool:^UINavigationController *{ return self.aiFlexNavigation; } completion:nil];
