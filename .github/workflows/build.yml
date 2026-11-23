@@ -41,24 +41,30 @@ jobs:
           echo "$RUNNER_TEMP/theos/vendor/dm.pl" >> "$GITHUB_PATH"
 
       - name: Fetch frida-gum devkit
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eo pipefail
-          # 版本不写死：release 的 tag 会变，写死容易 404；先取 latest 再按资产名回退。
-          VER=$(curl -fsSL https://api.github.com/repos/frida/frida/releases/latest | jq -r '.tag_name')
+          # 版本不写死：release 的 tag 会变，写死容易 404。
+          VER=$(curl -fsSL --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
+                https://api.github.com/repos/frida/frida/releases/latest | jq -r '.tag_name')
           echo "frida version: $VER"
           mkdir -p frida/vendor
           ASSET="frida-gum-devkit-${VER}-ios-arm64.tar.xz"
-          URL="https://github.com/frida/frida/releases/download/${VER}/${ASSET}"
-          if ! curl -fL --retry 3 -o /tmp/gum.tar.xz "$URL"; then
-            echo "精确资产名不可用，改从资产列表匹配"
-            ALT=$(curl -fsSL "https://api.github.com/repos/frida/frida/releases/tags/${VER}" \
-                  | jq -r '.assets[].browser_download_url' \
-                  | grep -E 'gum-devkit.*ios-arm64' | head -1)
-            test -n "$ALT"
-            echo "using $ALT"
-            curl -fL --retry 3 -o /tmp/gum.tar.xz "$ALT"
+          rm -rf /tmp/gumdl && mkdir -p /tmp/gumdl
+
+          # 匿名 GET /releases/download/... 会被 GitHub 限流成 403，
+          # 所以主路径走 gh（认证 API），curl 只作为带 token 的兜底。
+          if ! gh release download "$VER" --repo frida/frida --pattern "$ASSET" --dir /tmp/gumdl --clobber; then
+            echo "gh release download 失败，改用带 token 的 curl"
+            curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
+                 -H "Authorization: Bearer $GH_TOKEN" \
+                 -o "/tmp/gumdl/$ASSET" \
+                 "https://github.com/frida/frida/releases/download/${VER}/${ASSET}"
           fi
-          tar -xJf /tmp/gum.tar.xz -C frida/vendor
+
+          test -f "/tmp/gumdl/$ASSET"
+          tar -xJf "/tmp/gumdl/$ASSET" -C frida/vendor
           test -f frida/vendor/libfrida-gum.a
           ls -lh frida/vendor
 
