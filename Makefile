@@ -147,7 +147,9 @@ after-stage::
 	# staging 里的那份照常 ldid -S 签名，供 .deb 和传统越狱注入使用。
 	@STAGED_DYLIB=$$(find "$(THEOS_STAGING_DIR)" -name "$(LIBRARY_NAME).dylib" | head -1); \
 	test -n "$$STAGED_DYLIB" || { echo "staged dylib not found"; exit 1; }; \
-	cp "$$STAGED_DYLIB" "$(THEOS_PACKAGE_DIR)/$(ARTIFACT_BASE)-unsigned.dylib"
+	cp "$$STAGED_DYLIB" "$(THEOS_PACKAGE_DIR)/$(ARTIFACT_BASE)-unsigned.dylib"; \
+	ldid -D "$(THEOS_PACKAGE_DIR)/$(ARTIFACT_BASE)-unsigned.dylib"; \
+	echo "unsigned dylib LC_CODE_SIGNATURE count: $$(otool -l "$(THEOS_PACKAGE_DIR)/$(ARTIFACT_BASE)-unsigned.dylib" | grep -c LC_CODE_SIGNATURE || true)"
 	@find "$(THEOS_STAGING_DIR)" -name "$(LIBRARY_NAME).dylib" -exec ldid -S {} \;
 	@mkdir -p "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex3"
 	@cp ThirdPartyNotices/NOTICE ThirdPartyNotices/DylixTouch-APACHE-2.0.txt "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex3/"

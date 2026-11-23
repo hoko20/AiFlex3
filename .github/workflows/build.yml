@@ -133,8 +133,11 @@ jobs:
           test -n "$UNSIGNED" || { echo "unsigned dylib missing"; exit 1; }
           echo "signed   : $SIGNED ($(stat -f%z "$SIGNED") bytes)"
           echo "unsigned : $UNSIGNED ($(stat -f%z "$UNSIGNED") bytes)"
-          echo "signed   LC_CODE_SIGNATURE: $(grep -c 'LC_CODE_SIGNATURE' <(otool -l "$SIGNED" 2>/dev/null) || true)"
-          echo "unsigned LC_CODE_SIGNATURE: $(grep -c 'LC_CODE_SIGNATURE' <(otool -l "$UNSIGNED" 2>/dev/null) || true)"
+          SIGNED_LC=$(otool -l "$SIGNED" 2>/dev/null | grep -c 'LC_CODE_SIGNATURE' || true)
+          UNSIGNED_LC=$(otool -l "$UNSIGNED" 2>/dev/null | grep -c 'LC_CODE_SIGNATURE' || true)
+          echo "LC_CODE_SIGNATURE: signed=$SIGNED_LC unsigned=$UNSIGNED_LC"
+          test "$SIGNED_LC" -ge 1 || { echo "signed dylib lost its signature"; exit 1; }
+          test "$UNSIGNED_LC" -eq 0 || { echo "unsigned dylib still has a signature; LiveContainer will skip re-signing"; exit 1; }
 
       - name: List artifacts
         run: |
