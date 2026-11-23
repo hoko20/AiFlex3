@@ -6,6 +6,103 @@
 
 ---
 
+## 0. 能力总表（索引）
+
+### 0.1 总量
+
+| 维度 | 数量 |
+|---|---|
+| MCP 工具 | 6 个 |
+| MCP operation | 62 个（read 28 / sensitive 9 / control 20 / script 1 / trace 4） |
+| 授权组 | 5 组（read 始终开；sensitive / control / script / tracing 默认关） |
+| 真实触摸手势 | 7 种 |
+| FLEX 原生工具入口 | 全部 FLEX globals 行 + `extension.headers` + `extension.disassembly` |
+
+### 0.2 六个工具
+
+| 工具 | 授权 | operation 数 | 能力域 | 详见 |
+|---|---|---|---|---|
+| `aiflex_status` | read | — | 端点、监听状态、5 组授权、宿主版本、选中对象 | §5 |
+| `aiflex_read` | read | 28 | 现场认知、界面读取、对象与类、数据元信息、能力探测 | §6 |
+| `aiflex_sensitive` | sensitive | 9 | 头文件、网络正文、日志/文件内容、defaults 值、Keychain 元数据、截图 | §7 |
+| `aiflex_control` | control | 20 | 面板与 FLEX 导航、输入、点击、滚动、方法调用、真实手势 | §8 |
+| `aiflex_script` | script | 1（`run_js`） | 仅当前页 WKWebView/UIWebView 执行 JS | §13.7 |
+| `aiflex_trace` | tracing | 4（`start`/`read`/`stop`/`clear`） | 实例方法 IMP 替换 + 调用记录（实验） | §13.8 |
+
+### 0.3 `aiflex_read` 的 28 个 operation 分组
+
+| 分组 | operation |
+|---|---|
+| 现场认知 | `capabilities`、`current`、`report`、`app_info`、`device_info`、`controller_stack`、`chat_status` |
+| 界面读取 | `screen_elements`、`screen_texts`、`find_text`、`hit_test`、`view_tree`、`wait_for`、`snapshot` |
+| 对象与类 | `object_info`、`object_properties`、`find_instances`、`select_object`、`class_search`、`class_info`、`runtime_images` |
+| 数据元信息 | `network_list`、`network_search`、`cookies_list`、`sandbox_list`、`defaults_keys` |
+| 能力探测 | `gesture_capabilities`、`tool_catalog` |
+
+### 0.4 `aiflex_control` 的 20 个 operation 分组
+
+| 分组 | operation |
+|---|---|
+| 面板与 FLEX 导航 | `minimize_chat`、`restore_chat`、`open_tool`、`navigate_back`、`dismiss_tool`、`select_row`、`set_search`、`flex_scroll` |
+| 目标界面输入 | `input_text`、`set_control_value`、`activate_control`、`tap_text`、`scroll_to_text`、`scroll_view` |
+| 视觉辅助 | `highlight_element` |
+| 现场实验 | `set_view`、`undo`、`set_network_recording` |
+| 方法调用 | `invoke_method` |
+| 真实触摸 | `gesture`（`tap` / `double_tap` / `long_press` / `swipe` / `drag` / `pinch` / `rotate`） |
+
+### 0.5 典型任务对应什么 operation
+
+| 想做的事 | 调用 |
+|---|---|
+| 确认连的是哪个 App、哪些组开着 | `aiflex_status` |
+| 读当前页面所有可点元素与坐标 | `aiflex_read(screen_elements)` / `screen_texts` |
+| 找「登录」按钮并点击 | `find_text(query=登录)` → `tap_text(query=登录)` |
+| 点完确认页面真的变了 | `snapshot(save)` → 操作 → `snapshot(diff)` |
+| 拿某个类的完整头文件 | `class_search` → `class_header(name=...)` 分页 |
+| 调业务方法并读结果 | `class_info` → `invoke_method` → `object_info(returnId)` |
+| 看某个 cell 的内部状态 | `find_instances(class=...)` → `object_properties(id=...)` |
+| 搜日志里的 error | `sandbox_list` → `sandbox_grep` / `sandbox_read(tail=true)` |
+| 抓一次登录的请求响应 | `set_network_recording(enabled)` → 操作 → `network_list` → `network_detail` |
+| 等异步加载完成再读 | `wait_for(condition=text_exists, timeout=5)` |
+| 复现滑动 / 双指缩放 | `gesture(kind=swipe/pinch, ...)` |
+| 读网页里的 token | `run_js(code=...)` |
+| 跟踪某个方法被谁调用 | `aiflex_trace(start)` → 操作 → `read` → `stop` |
+| 打开 FLEX 的头文件 / 反汇编页 | `tool_catalog` → `open_tool(tool_id=extension.headers/disassembly)` |
+
+### 0.6 FLEX 原生 UI（人工点选，MCP 只能导航到入口）
+
+| 模块 | 内容 |
+|---|---|
+| 视图与对象 | 视图层级、对象浏览器、Live Objects、堆与引用、属性/ivar 查看 |
+| 网络 | 网络记录、请求详情、Mock |
+| 存储 | 文件浏览、UserDefaults、Keychain、数据库 |
+| DoKit 移植 | AppInfo、CPU、性能、卡顿、内存泄漏、崩溃监控、日志（查看/过滤/导出）、网络历史、弱网、Mock、H5、取色、组件、清理、Database、悬浮窗、视觉工具 |
+| Lookin / Reveal 式 | `FLEXLookinInspector`、`FLEXRevealLikeInspector`、`FHS*` 快照、`RTB*` 运行时浏览 |
+| `x/Decrypt` | 抓包解密：fishhook 打 `SSL_get_psk_identity`、OpenSSL `EVP_*`/`AES_*`、`CFNetworkCopySystemProxySettings`、脚本解码 |
+| `x/ClassDump` | 类头文件导出（含 Swift dumper + zip） |
+| `x/Disassembler` | capstone AArch64 反汇编 + 伪代码页 |
+| `x/AppProtection` | App 保护绕过检测 |
+| `x/filza` | 文件管理入口 |
+
+> `tool_catalog` 会返回每个入口的 `agentOpenSupported`。`extension.filza` / `extension.capture` / `extension.protection` 明确不对 AI 开放（带 `reason`），属设计上的硬边界。
+
+### 0.7 当前明确没有的能力（边界）
+
+| 缺失能力 | 影响 |
+|---|---|
+| C / Swift / 静态函数 inline hook | 只能到 ObjC 方法级（`aiflex_trace`），系统库函数动不了 |
+| 任意地址内存读 / 写 / 补丁 | 无 `read_mem` / `write_mem` / `patch` |
+| 内存特征扫描（AOB） | 无 `scan` |
+| 模块导出/导入符号枚举 | `runtime_images` 只列路径，无符号级 |
+| 指令级追踪 / 覆盖率 | 无 Stalker 类能力 |
+| 崩溃现场捕获（信号 + backtrace） | DoKit 面板有 UI，MCP 拿不到 |
+| 跨进程 attach / spawn / 进程列表 | 受 App 沙盒与 `task_for_pid` 限制，进程内无法实现 |
+| 跑 frida 的 `.js` / `.ts` 脚本 | 现有 `run_js` 只作用于 WKWebView，不是 GumJS |
+
+补齐路径见 §17（Frida 集成规划）：进程内部分用 `frida-gum`，跨进程部分需设备侧 root `frida-server`。
+
+---
+
 ## 1. 它是什么
 
 AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 **Streamable HTTP MCP 服务**：
@@ -620,4 +717,72 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 - 局域网/IPv6 接入修复、看门狗误杀修复、`nw_connection_t` ARC 桥接修复、参数校验与持久化加固。
 - 第二批能力（文字查找/点击、对象字段、网络/日志、快照、脚本、方法追踪）。
 - 第三批能力（`wait_for`、`scroll_to_text`、`controller_stack`、`view_tree` 过滤、`app_info` / `device_info`）。
+
+---
+
+## 17. Frida 集成规划（未实现，设计已定稿）
+
+目标：补上 §0.7 里那批「进程内插桩」空白，仍然只走 MCP 一条通道，客户端配置不变。
+
+### 17.1 能力边界
+
+| 能力 | AiFlex3 进程内（frida-gum） | 需要设备侧 root（frida-server） |
+|---|---|---|
+| 任意地址 inline hook（C / Swift / 静态函数） | 可行 | — |
+| hook 时读寄存器、参数、返回值 | 可行（`GumInvocationContext`） | — |
+| 内存读 / 写 / 补丁 | 可行 | — |
+| 内存特征扫描 | 可行（C 层无现成 API，需自行遍历 region 匹配） | — |
+| 模块 / 导出 / 导入符号枚举 | 可行 | — |
+| 指令级追踪（Stalker）、崩溃 backtrace | 可行但重，必须限时 | — |
+| 跨进程 attach、spawn、进程列表、kill | **不可行**（无 `task_for_pid`） | 必需 |
+| 脱离沙盒读其他 App 容器 | **不可行** | 必需 |
+| 跑 frida-compile 的 `.js`/`.ts` | 需 GumJS：`frida-gum-devkit` **不含**，要 gadget 或自编译 agent | — |
+
+结论：分析类能力约 70–80% 可内嵌；设备控制类不塞进这个 dylib。
+
+### 17.2 三阶段
+
+| 阶段 | 内容 | 依赖 |
+|---|---|---|
+| Phase 1 | `frida-gum` 静态内嵌，暴露 `aiflex_frida` 核心 operation | `frida-gum-devkit-17.27.4-ios-arm64.tar.xz` |
+| Phase 2 | 接 GumJS，支持直接投喂 `.js`/`.ts`（`script_eval`） | gadget 或自编译 `frida-agent`（quickjs） |
+| Phase 3 | `frida-core-devkit` 客户端 + 设备侧 rootless `frida-server`，暴露 `device_processes` / `attach` / `spawn` | `/var/jb/usr/sbin/frida-server` + root |
+
+### 17.3 Phase 1 的工具契约（规划）
+
+新增工具 `aiflex_frida`，授权组 `frida`（面板开关，默认关）；写类操作再叠一层「Frida 写入」开关。
+
+| operation | 参数 | 授权 | 说明 |
+|---|---|---|---|
+| `status` | — | frida | 引擎版本、是否初始化、hook 数、Stalker 状态 |
+| `modules` | `filter`,`limit` | frida | base / size / path |
+| `exports` | `module`,`query`,`limit` | frida | 符号名、类型、地址 |
+| `imports` | `module`,`query` | frida | 依赖符号与来源 |
+| `resolve` | `module`+`name` 或 `address` | frida | 名字 ↔ 地址互查 |
+| `read_mem` | `address`,`length`≤64K,`format` | frida | hex / utf8 / u32 / u64 / ptr |
+| `scan` | `pattern`(hex + `??` 通配),`module`,`limit` | frida | 特征码扫描 |
+| `hook` | `target`,`signature`,`max_hits`,`capture` | frida-write | 返回 `hookId` |
+| `hooks` | — | frida | 已装 hook、命中次数、最近调用快照 |
+| `unhook` | `id` 或 `all` | frida-write | 必须能一键全撤 |
+| `patch` | `address`,`hex` | frida-write | 自动备份原始字节 |
+| `trace` | `thread`,`duration`≤10s,`events` | frida-trace | Stalker，硬超时 |
+| `crash_log` | — | frida | 最近异常/信号 + backtrace |
+
+### 17.4 构建集成
+
+```makefile
+FRIDA_VERSION = 17.27.4
+$(LIBRARY_NAME)_FILES   += $(shell find frida -maxdepth 1 -name '*.c')
+$(LIBRARY_NAME)_CFLAGS  += -I./frida/vendor -DGUM_STATIC
+$(LIBRARY_NAME)_LDFLAGS += -L./frida/vendor -lfrida-gum
+```
+
+CI 在 `Install Theos` 之后追加：下载 `frida-gum-devkit-$VER-ios-arm64.tar.xz` 解到 `frida/vendor/`（`xz` 已在 brew 安装列表里），并断言 `libfrida-gum.a` 存在。
+
+### 17.5 已知风险
+
+1. **capstone 符号冲突**：gum 静态库内 vendored capstone 与 `x/capstone` 都会定义 `cs_open` / `cs_disasm`，需二选一（推荐反汇编统一走 gum 那份）或给 `x/capstone` 加符号前缀。
+2. **arm64e / PAC**：自算 hook 目标地址要先 strip PAC，或统一走 `gum_module_find_export_by_name`。
+3. **崩溃放大**：任意地址补丁没有 selector 黑名单可依赖，`patch` 前必须备份、`unhook(all)` 必须可用，并带一次开机自检。
+4. **体积与许可**：dylib 约 9.4 MB → 14–16 MB；frida 为 wxWindows Library Licence 3.1，需在 `ThirdPartyNotices/` 补一份 NOTICE。
 
