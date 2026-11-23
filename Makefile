@@ -1,6 +1,6 @@
 PACKAGE_IDENTIFIER = com.hoko20.aiflex3
 PACKAGE_NAME = AiFlex3
-PACKAGE_VERSION = 3.4.0
+PACKAGE_VERSION = 3.4.1
 PACKAGE_ARCHITECTURE = arm64
 PACKAGE_REVISION = 1
 PACKAGE_SECTION = Tweaks
@@ -58,7 +58,7 @@ $(LIBRARY_NAME)_FILES = $(shell find . \( -name '*.m' -o -name '*.mm' -o -name '
 # 处置：把 x/capstone/include 降到 5.0.1（与 gum 内置版本一致），停止编译
 # x/capstone/*.c，x/Disassembler 改用 5.0 的 cs_arm64 API（#include <capstone/arm64.h>）。
 # 这样全进程只有一份 capstone 实现，且 UCDisassembler 用的头文件与实现同版本。
-# 注意：x/capstone 下的 .c 仍是 6.0 源码，不要重新加入编译，否则立刻回到冲突状态。
+# 6.0 源码（75 文件 / ~20 MB）已从树中删除，只留 include；需要时见 NOTICE 里的回滚说明。
 CAPSTONE_INCLUDE = -I./x/capstone/include
 
 # 必要的框架和库
@@ -104,8 +104,10 @@ $(LIBRARY_NAME)_CFLAGS += -miphoneos-version-min=15.0
 # CI 会把 frida-gum-devkit 解压到 frida/vendor。本地没有 devkit 时定义 GX_NO_GUM，
 # 引擎降级为「仅 status / backtrace / crash_log 可用」，其余 operation 返回明确错误，
 # 构建照常通过——不会因为缺库把整条流水线拖红。
-# 注意：gum 的 capstone 与仓库 x/capstone 只在链接期按需拉取 .o，
-# 本项目不引用 stalker/relocator，因此正常情况下不会发生 duplicate symbol。
+# 注意：gum 的 capstone 与仓库头文件不同源——实现只有 gum 内置那一份。
+# aiflex_hook 用到 gum Interceptor，arm64 侧会经 relocator 重定位被覆盖的指令，
+# 而 relocator 硬引用 `cs_arch_register_arm64`，所以那份 5.0.1 实现剥不掉。
+# 不要在树里再引入第二份 capstone 源码，否则立刻 duplicate symbol。
 FRIDA_VENDOR = ./frida/vendor
 ifneq ($(wildcard $(FRIDA_VENDOR)/libfrida-gum.a),)
 $(LIBRARY_NAME)_CFLAGS += -I$(FRIDA_VENDOR) -DGUM_STATIC

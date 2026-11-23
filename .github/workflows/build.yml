@@ -71,10 +71,16 @@ jobs:
       - name: Verify single capstone
         run: |
           # capstone 的实现只来自 gum 内置那份（5.0.1），仓库 x/capstone 只保留
-          # 同版本头文件供 UCDisassembler 使用。这里确认 Makefile 没有又把
-          # x/capstone 的源码加回编译列表——那会立刻回到 duplicate symbol。
+          # 同版本头文件供 UCDisassembler 使用。6.0 源码已于 3.4.1 移除，
+          # 需要时从 git 历史 09cd3d6 取回并走符号隔离（见 NOTICE）。
           if grep -qE "^\s*CAPSTONE_(CORE|ARCH)\s*=" Makefile; then
             echo "Makefile 仍在收集 x/capstone 源码，会与 gum 内置 capstone 冲突"
+            exit 1
+          fi
+          stray=$(find x/capstone -type f -not -path "x/capstone/include/*" | wc -l | tr -d ' ')
+          if [ "$stray" != "0" ]; then
+            echo "x/capstone 下除 include/ 外不应再有文件，实际 $stray 个："
+            find x/capstone -type f -not -path "x/capstone/include/*"
             exit 1
           fi
           grep -m1 "CS_API_MAJOR" x/capstone/include/capstone/capstone.h

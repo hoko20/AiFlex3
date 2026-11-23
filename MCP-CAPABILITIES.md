@@ -881,7 +881,7 @@ CI 在 `Install Theos` 之后追加 `Fetch frida-gum devkit`：取 `releases/lat
 
 ### 17.4 已知风险与处置
 
-1. **capstone 符号冲突**：gum 静态库内 vendored 一份 capstone，仓库又有 `x/capstone`。静态库按需拉取 `.o`，本项目只用到 memory/module/process/backtracer，不引用 stalker/relocator，正常情况那些目标文件不会被拉入。若真出现 `duplicate symbol`，处置顺序：先确认是否误引 stalker → 给 `x/capstone` 加 `objcopy --prefix-symbols=flx_` → 最后才考虑把反汇编统一到 gum 那份。
+1. **capstone 符号冲突**：gum 静态库内 vendored 一份 capstone 5.0.1，仓库只保留同版本头文件（`x/capstone/include`），实现全部来自 gum。这条依赖是硬的——`aiflex_hook` 走 gum Interceptor，arm64 侧经 relocator 重定位被覆盖的指令，而 relocator 直接引用 capstone 内部符号 `cs_arch_register_arm64`，剥离 gum 那份会立刻 undefined。因此不能再引入第二份 capstone 源码：重名会 `duplicate symbol`，共用一份又因 `cs_detail` 布局不同（`MAX_IMPL_W_REGS` 47 vs 20、union 偏移 154 vs 92）读出错位的 arm64 operands。真需要 6.0 时的唯一路径是符号隔离：`llvm-objcopy --prefix-symbols=flx6_` 重命名 6.0 实现，调用侧同步改宏，两套并存、各自 ABI 自洽（代价约 +1.5~2.5 MB dylib）。
 2. **arm64e / PAC**：地址一律经 `gum_module_get_range` / `gum_module_find_export_by_name` 获取，不自己从函数指针里截位。
 3. **崩溃放大**：这就是本组只做只读的原因——写类操作没有 selector 黑名单可依赖，一旦写错位置，崩溃点与操作时刻解耦、无法归因。
 4. **体积与许可**：dylib 约 +4~5 MB；frida 为 wxWindows Library Licence 3.1，已在 `ThirdPartyNotices/NOTICE` 补条目，说明静态链接来源 tag 与可重链接材料位置。

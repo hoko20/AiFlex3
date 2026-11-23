@@ -92,5 +92,12 @@ match the implementation embedded in frida-gum. They must not be bumped to
 6.x independently — Capstone 6 changed the internal layout of cs_detail
 (MAX_IMPL_W_REGS 47 vs 20, MAX_NUM_GROUPS 16 vs 8, union offset 154 vs 92),
 so mixing 6.x headers with the 5.0.1 implementation silently misreads arm64
-operands. x/capstone/*.c is kept in the tree for reference but is excluded
-from the build for the same reason.
+operands.
+
+The 6.0 sources that used to sit under x/capstone/ (cs.c, Mapping.c,
+MCInst*.c, SStream.c, utils.c and arch/{AArch64,ARM}, 75 files / ~20 MB)
+were never compiled and have been removed from the tree. They remain in
+git history at commit 09cd3d6 if a future port wants them back — restoring
+would require prefixing their symbols (llvm-objcopy --prefix-symbols) since
+frida-gum's arm64 relocator hard-references its own 5.0.1 copy and cannot
+be stripped.
