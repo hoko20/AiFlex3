@@ -13,20 +13,21 @@
 
 | 维度 | 数量 |
 |---|---|
-| MCP 工具 | 9 个 |
-| MCP operation | 84 个（read 28 / sensitive 9 / control 20 / script 1 / trace 4 / frida 11 / disasm 7 / dump 4） |
-| 授权组 | 5 组（read 始终开；sensitive / control / script / tracing 默认关；`aiflex_frida`、`aiflex_disasm`、`aiflex_dump` 都挂在 sensitive 下，不新增开关） |
+| MCP 工具 | 10 个 |
+| MCP operation | 93 个（read 28 / sensitive 9 / control 20 / script 1 / trace 4 / frida 11 / disasm 7 / dump 4 / hook 9） |
+| 授权组 | 6 组（read 始终开；sensitive / control / script / tracing / hook 默认关；`aiflex_frida`、`aiflex_disasm`、`aiflex_dump` 挂在 sensitive 下，`aiflex_hook` 独占 hook 组） |
 | 真实触摸手势 | 7 种 |
 | FLEX 原生工具入口 | 全部 FLEX globals 行 + `extension.headers` + `extension.disassembly` |
 | 原生层只读观测 | frida-gum（模块/符号/线程/内存区间/内存读/特征扫描/回调栈/崩溃记录） |
 | 机器码分析 | capstone 5.0.1（AArch64 反汇编 / 函数边界 / CFG / 交叉引用 / 符号化） |
 | 二进制导出 | Mach-O 内存导出（按 segment 搬明文、`cryptid` 置零） |
+| 代码改写 | frida-gum Interceptor（inline hook / 字节补丁 / 逐条还原 / 参数抓取） |
 
-### 0.2 九个工具
+### 0.2 十个工具
 
 | 工具 | 授权 | operation 数 | 能力域 | 详见 |
 |---|---|---|---|---|
-| `aiflex_status` | read | — | 端点、监听状态、5 组授权、宿主版本、选中对象、Frida/反汇编/导出引擎状态 | §5 |
+| `aiflex_status` | read | — | 端点、监听状态、6 组授权、宿主版本、选中对象、Frida/反汇编/导出/改写引擎状态 | §5 |
 | `aiflex_read` | read | 28 | 现场认知、界面读取、对象与类、数据元信息、能力探测 | §6 |
 | `aiflex_sensitive` | sensitive | 9 | 头文件、网络正文、日志/文件内容、defaults 值、Keychain 元数据、截图 | §7 |
 | `aiflex_control` | control | 20 | 面板与 FLEX 导航、输入、点击、滚动、方法调用、真实手势 | §8 |
@@ -35,6 +36,7 @@
 | `aiflex_frida` | sensitive | 11 | 原生层只读观测：模块/符号/线程/内存区间/内存读/特征扫描/回调栈/崩溃记录 | §18 |
 | `aiflex_disasm` | sensitive | 7 | AArch64 反汇编、函数与 CFG、函数序言扫描、符号双向解析、交叉引用、ObjC 方法体 | §19 |
 | `aiflex_dump` | sensitive | 4 | 已加载镜像枚举、加密状态、明文 Mach-O 导出、导出文件清单 | §20 |
+| `aiflex_hook` | hook | 9 | inline hook、字节补丁、调用记录、逐条还原、端到端自检 | §21 |
 
 ### 0.3 `aiflex_read` 的 28 个 operation 分组
 
@@ -97,19 +99,21 @@
 
 | 缺失能力 | 影响 |
 |---|---|
-| C / Swift / 静态函数 inline hook | 只能到 ObjC 方法级（`aiflex_trace`），系统库函数动不了 |
-| 任意地址内存 **写** / 代码补丁 | `aiflex_frida` 只提供 `read_mem` / `scan`，不提供 `write_mem` / `patch` |
-| 指令级追踪 / 覆盖率 | 无 Stalker 类能力 |
+| 指令级追踪 / 覆盖率 / 每条指令的寄存器快照 | 无 Stalker 类能力 |
 | 跨进程 attach / spawn / 进程列表 | 受 App 沙盒与 `task_for_pid` 限制，进程内无法实现 |
 | 跑 frida 的 `.js` / `.ts` 脚本 | 现有 `run_js` 只作用于 WKWebView，不是 GumJS |
 | 反编译成类 C 伪代码 | 有反汇编与 CFG（`aiflex_disasm`），没有 decompiler |
 | 重签名 / 安装导出包 | `aiflex_dump` 导出的 Mach-O 不带有效签名，只能静态分析 |
+| 写内存数据段 | `aiflex_hook` 的 `patch` 只写**可执行页的整指令**，不改数据、不写堆 |
+| 改函数返回值 / 参数 | `aiflex_hook` 只**观测** x0-x3 与返回值，不做 `replace_return_value` |
 
 已在 3.1.0 补齐（`aiflex_frida`）：模块导出/导入符号枚举、任意地址内存**读**、内存特征扫描、线程列表、主线程符号化调用栈、映射区间、崩溃记录。详见 §18。
 
 已在 3.2.0 补齐（`aiflex_disasm` / `aiflex_dump`）：AArch64 反汇编、函数边界与基本块 CFG、交叉引用、符号双向解析、ObjC 方法体反汇编、加密镜像的明文导出。详见 §19、§20。
 
-写类能力（hook / patch / Stalker）与跨进程控制仍不在本 dylib 内，理由见 §17.1、§18.6、§19.5。
+已在 3.3.0 补齐（`aiflex_hook`）：C / Swift / 静态函数 inline hook、任意可执行地址的整指令字节补丁、调用参数与返回值抓取、逐条还原、端到端自检。详见 §21。
+
+剩余缺口只有三块：Stalker 指令级追踪、GumJS 脚本、跨进程控制。前两者的成本与手机端取证定位不匹配（追踪要处理每条指令、脚本要带一整套 JS 运行时），后者进程内无法实现。
 
 ---
 
@@ -160,8 +164,11 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | control | 手机面板「界面控制」 | `aiflex_control` 不出现在 `tools/list` |
 | script | 手机面板「脚本执行」 | `aiflex_script` 不出现在 `tools/list` |
 | tracing | 手机面板「方法追踪」 | `aiflex_trace` 不出现在 `tools/list` |
+| hook | 手机面板「代码改写」 | `aiflex_hook` 不出现在 `tools/list` |
 
 `aiflex_frida` / `aiflex_disasm` / `aiflex_dump` 都不新增开关，统一挂在 sensitive 下：能读进程内存、能读代码页、能把明文二进制写出来，这三件事本来就同一量级的敏感度，和 `sandbox_read` / `class_header` 同级。三者都只读运行时代码，没有写类 operation。
+
+`aiflex_hook` 单独一组、单独一个开关，不和 sensitive 合并。理由是性质不同：前四个是「看」，它是「改」——打开它就意味着运行中的指令可以被改写，这不该因为「我只想看日志」而顺带被授权。面板上这一行的副标题写的是「会真实改变运行中的代码；可逐条还原」。
 
 所有写操作、敏感读取都必须由手机端用户显式授权；授权关闭时工具直接不可见，调用会报“未知工具”。
 
@@ -489,9 +496,9 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 12. 版本
 
-- 文档版本：2026-11-23（AiFlex3 3.2.0）
-- 插件：`com.hoko20.aiflex3` 3.2.0，产物 `FLEX++-3.2.0-arm64-rootless.dylib` / `com.hoko20.aiflex3_3.2.0_iphoneos-arm64.deb`
-- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息、原生层只读观测（模块/符号/内存/线程/调用栈/崩溃）、**AArch64 反汇编与 CFG、符号双向解析、交叉引用、ObjC 方法体反汇编、加密镜像明文导出**
+- 文档版本：2026-11-23（AiFlex3 3.3.0）
+- 插件：`com.hoko20.aiflex3` 3.3.0，产物 `FLEX++-3.3.0-arm64-rootless.dylib` / `com.hoko20.aiflex3_3.3.0_iphoneos-arm64.deb`
+- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息、原生层只读观测（模块/符号/内存/线程/调用栈/崩溃）、AArch64 反汇编与 CFG、符号双向解析、交叉引用、ObjC 方法体反汇编、加密镜像明文导出、**inline hook 与字节补丁（含参数抓取、逐条还原、端到端自检）**
 - 仓库：https://github.com/hoko20/AiFlex3
 - 自动构建：GitHub Actions `Build AiFlex3`，push 到 `main` 触发，产物以 artifact 形式提供
 
@@ -700,6 +707,16 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 ---
 
 ## 16. 变更记录
+
+### 3.3.0（2026-11-23）—— 新增 `aiflex_hook`（代码改写）+ 面板补全工具清单
+
+**新增**
+
+- 工具 `aiflex_hook`（独占 hook 授权组，9 个 operation）：`status`、`list`、`hook`、`unhook`、`events`、`clear`、`patch`、`restore`、`selftest`。基于 frida-gum 的 `GumInterceptor` 与 `gum_memory_patch_code`，一次把 inline hook、字节补丁、调用记录、逐条还原全部落地。详见 §21。
+- 源文件 `FLEXAiFlexHook.h/.m`（1217 行）。
+- `aiflex_status` 新增 `hook` 字段，带 `writeCapabilities` 数组如实列出写能力。
+- 面板权限卡从 5 个开关变 6 个，「代码改写」独立开关；「可用工具」列表从 6 条补到 10 条（此前漏了 `aiflex_frida` / `aiflex_disasm` / `aiflex_dump`）。
+- `FLEXAiFlexFrida` 新增 `+ensureGumInitialized`：gum 初始化全进程只能一次，两个引擎共用同一个 `dispatch_once`。
 
 ### 3.2.0（2026-11-23）—— 新增 `aiflex_disasm`（机器码分析）+ `aiflex_dump`（二进制导出）
 
@@ -1142,3 +1159,180 @@ aiflex_sensitive(operation=sandbox_read, path="Documents/AiFlex3Dump/MyApp_dump"
 | `__DATA` 指针已重定位 | 内存里的指针是 rebase 后的值，导出文件里这些指针带 `slide` 偏移。按 `image base = __TEXT.vmaddr` 加载分析不受影响，但跨段指针的绝对地址会有偏差 |
 | 每进程独立可见 | 只能导出本进程已加载的镜像；要导出别的 App 得先把它注入了 |
 | 输出位置固定 | `Documents/AiFlex3Dump/`，不接任意路径，避免变成任意文件写入原语 |
+
+---
+
+## 21. `aiflex_hook`（需「代码改写」授权，唯一的写类组）
+
+改运行中的代码。inline hook 走 frida-gum 的 `GumInterceptor`，字节补丁走 `gum_memory_patch_code`。
+
+### 21.1 为什么这次能一次做完
+
+上一轮把 hook 拆成 Phase 1.5，理由是「需要目标校验 + 自检 + 自动备份 + unhook(all) 四件齐了才敢放」。这一轮查清了一件事：**frida-gum 已经提供了完整的 hook 基础设施，不需要自己写指令搬运器**：
+
+| gum 接口 | 作用 |
+|---|---|
+| `gum_interceptor_attach` / `detach` | trampoline 式入口拦截。指令重定位、页权限切换、原子替换、在途调用等待全部由 gum 处理 |
+| `gum_make_call_listener` | 回调式监听器，不用 `G_DEFINE_TYPE` 实现 GObject 子类 |
+| `gum_invocation_context_get_nth_argument` / `get_return_value` | 在回调里读参数与返回值 |
+| `gum_memory_patch_code` | 受控代码页写入，内部完成 `mprotect` 与 `icache` 刷新 |
+
+所以「一次加进去」的代价只剩那四件事本身，而不是「先造一个 hook 引擎再补四件事」。四件事全部在代码里，见 §21.7。
+
+### 21.2 参数
+
+| 参数 | 类型 | 适用 operation | 说明 |
+|---|---|---|---|
+| `operation` | string | 全部 | 见 21.3 |
+| `address` | string | `hook` / `patch` | **必须是字符串**，如 `"0x104a2b000"`。JSON number 是 double，超过 2^53 丢精度 |
+| `class` + `selector` + `meta` | string / string / bool | `hook` / `patch` | `meta=true` 查类方法；不传时按实例方法查 |
+| `module` + `name` | string / string | `hook` / `patch` | 导出符号。带 `module` 时只在该镜像里找，不带则全局找 |
+| `bytes` | string | `patch` | 十六进制字节串，`"1f 20 03 d5"` / `"1f2003d5"` 都行。**长度必须是 4 的整数倍** |
+| `record_args` | bool | `hook` | 默认 `true`。`false` 只计数不记录，高频函数用 |
+| `label` | string | `hook` / `patch` | 备注，回显在 `list` 里 |
+| `id` | integer | `unhook` / `restore` / `events` | `hook` / `patch` 返回的 id |
+| `all` | bool | `unhook` / `restore` | 全部摘掉 / 全部还原 |
+| `limit` | integer | `events` | 默认 100 / 上限 1000 |
+| `since` | string | `events` | 增量游标，回传上次的 `nextSince` |
+| `phase` | enum | `events` | `enter` / `leave` / `both`（默认） |
+| `reset_counters` | bool | `clear` | 同时把各 hook 的调用计数归零 |
+
+### 21.3 operation
+
+| operation | 作用 |
+|---|---|
+| `status` | 引擎可用性、硬上限、自检状态、当前活跃 hook / patch 数、写能力清单 |
+| `list` | 每条 hook 与 patch 的 id、地址、所属镜像与偏移、已备份的原始字节 |
+| `hook` | 在函数入口挂 interceptor，开始记录调用 |
+| `unhook` | 摘掉（传 `id` 或 `all=true`），返回每条被摘 hook 的最终调用次数 |
+| `events` | 读环形缓冲，可按 `id` / `phase` 过滤，`since` 增量拉取 |
+| `clear` | 推进读取游标；`reset_counters=true` 同时清零计数 |
+| `patch` | 写整指令到可执行地址，自动备份原始字节 |
+| `restore` | 按备份写回（传 `id` 或 `all=true`） |
+| `selftest` | 端到端验证：attach `getpid` → 真调三次确认回调触发 → detach → 再调一次确认停止 |
+
+### 21.4 目标三种写法
+
+```
+aiflex_hook(operation=hook, address="0x104a2b0a4")
+aiflex_hook(operation=hook, module="MyApp", name="_Z9somethingv")
+aiflex_hook(operation=hook, class="FooViewController", selector="viewDidLoad")
+aiflex_hook(operation=hook, class="FooViewController", selector="sharedInstance", meta=true)
+```
+
+优先级 `address` > `class`+`selector` > `module`+`name`。类方法必须传 `meta=true`：`class_getInstanceMethod` 对类方法返回 `nil`，这是逆向时最容易漏的一步。
+
+四种写法里 `class`+`selector` 最省事，因为 ObjC 方法名本身就是语义。想 hook 一个 C 函数（比如 `CCCrypt` 或某个静态函数），只有 `module`+`name` 或 `address` 两条路——静态函数没有导出符号，得先用 `aiflex_disasm(operation=scan_functions)` 找到地址。
+
+### 21.5 事件对象
+
+```json
+{
+  "seq": 10241,
+  "id": 2,
+  "phase": "enter",
+  "thread": 43521,
+  "depth": 0,
+  "ageMs": 812.4,
+  "args": [
+    { "kind": "object?", "hex": "0x283a1c2a0", "isa": "0x1f0a4e0c8" },
+    { "kind": "symbol",   "hex": "0x1a2b3c4d0", "symbol": "-[Foo bar]", "image": "/System/Library/..." },
+    { "kind": "string",   "hex": "0x16f2a0040", "str": "https://example.com/api" },
+    { "kind": "small",    "hex": "0x2", "value": 2 }
+  ]
+}
+```
+
+`kind` 取值：
+
+| kind | 含义 |
+|---|---|
+| `null` | 值是 0 |
+| `small` | 小于 0x1000，当整数看 |
+| `symbol` | `dladdr` 命中导出符号，带 `symbol` 和 `image` |
+| `image` | 正好是某个镜像基址 |
+| `string` | 逐字节验过是可打印 ASCII，长度 ≥ 4，带 `str` |
+| `object?` | `isa` 落在可读内存且 8 字节对齐——**只是像**，没做 `object_getClass` |
+| `data` | 可读但没有可识别结构 |
+
+`object?` 后面的问号是刻意的：对伪造指针调 runtime 函数会直接段错误，所以这里只做到「isa 可读」这一层，不 deref class 结构、不取类名。要类名就用 `aiflex_read(operation=object_info)` 走正常路径。
+
+`leave` 事件只有 `return` 字段，没有 `args`。
+
+### 21.6 典型工作流
+
+**改一个 ObjC 方法的返回值（最常见的用途）**
+
+```
+aiflex_hook(selftest)                                   → 先确认 ok=true
+aiflex_disasm(objc_method, class="Foo", selector="isVip")  → 看到 IMP 附近是
+                                                           mov w0, #0 / ret
+aiflex_hook(patch, address="<那个 mov 的地址>", bytes="20008052")
+                                                           → mov w0, #1
+aiflex_read(screen_texts)                               → 复核界面是否真的变了
+aiflex_hook(restore, all=true)                          → 还原
+```
+
+`mov w0, #1` 是 `0x52800020`，小端写入就是 `20 00 80 52`。`mov w0, #0` 是 `0x52800000` → `00 00 80 52`。
+
+**看某个 C 函数被谁调用、传了什么**
+
+```
+aiflex_frida(modules, filter="MyApp")                    → 拿 base
+aiflex_disasm(scan_functions, address="<base>", size=65536)
+                                                         → 找目标函数地址
+aiflex_hook(hook, address="0x...", label="CCCrypt")
+aiflex_hook(events, limit=50)                           → 看 x0-x3
+aiflex_hook(unhook, id=1)
+```
+
+**高频函数只看次数**
+
+```
+aiflex_hook(hook, class="NSObject", selector="description", record_args=false)
+... 操作一段时间 ...
+aiflex_hook(list)                                       → calls 字段就是次数
+```
+
+`record_args=false` 时 listener 只做一次原子递增就返回，开销可以忽略。开着记录的话，一个每秒几万次的函数会在几百毫秒内把 4096 条缓冲刷满，其他 hook 的事件全被挤掉。
+
+### 21.7 可回滚是怎么构造的
+
+| 机制 | 实现 |
+|---|---|
+| **目标三重校验** | 4 字节对齐 → `gum_memory_query_protection` 确认含 `GUM_PAGE_EXECUTE` → `dladdr` 确认不是 AiFlex3 自身镜像。另加地址下限 `0x100000000`。任何一项不过就拒绝，不写入 |
+| **自动备份** | `patch` 写入前先用 `gum_memory_read` 读原始字节存入记录；读不到就拒绝写入（没有备份等于没有还原） |
+| **写入后校验** | 写完立刻读回逐字节比对；不一致就用备份**自动回滚**并报错，不留半成品 |
+| **逐条还原** | `restore(id)` / `restore(all)` 只写回备份里的原始字节，不依赖调用方记参数 |
+| **端到端自检** | `selftest` 真的 attach `getpid`、真的调三次、真的 detach 再调一次。只检查 `attach` 返回 `GUM_ATTACH_OK` 不够——trampoline 可能挂上了但回调没接上 |
+| **同址冲突保护** | 同一地址重复 hook 拒绝；同地址正在 hook 时拒绝 patch（会写坏 trampoline）；patch 区间重叠拒绝 |
+| **审计日志** | 每次 hook / unhook / patch / restore 追加一行到 `Documents/AiFlex3Hooks/audit.log` |
+
+**没有做「重启后自动还原」，这是刻意的。** 进程结束后 trampoline 和内存补丁本来就消失了；跨进程按旧 `module + offset` 重放，只会在 App 更新后把新版本的指令写坏，那是把「可恢复」变成「不可恢复」。`audit.log` 只供人查历史，不参与任何自动流程。
+
+### 21.8 边界与代价
+
+| 项 | 说明 |
+|---|---|
+| 参数类型 | 只抓 x0-x3 与 x0 返回值。浮点参数在 d0-d3，取不到；大于 4 个参数的部分取不到 |
+| 不改返回值 / 参数 | 只观测。要改参数值需要 `gum_invocation_context_replace_nth_argument`，那会让「记录」变成「干预」，不在本组 |
+| 不能 hook 的情况 | 函数首条就是跳转、函数太短无法重定位、地址已被其他 interceptor 占用——gum 会返回对应的 `GumAttachReturn`，这里原样翻成人话报错 |
+| 高频函数 | `record_args=true` 会拖慢目标函数（每次调用多一次 memcpy 级别的工作）。`objc_msgSend` 这类不要开记录 |
+| 并发 | 所有 gum 调用在专属串行队列 `com.hoko20.aiflex3.hook` 上。listener 在目标线程执行，不受队列约束（也不该受） |
+| 上限 | 32 条 hook / 64 处 patch / 单次 64 字节补丁 |
+| 内存 | detach 后 slot 不立即释放，留在 retired 列表里——detach 之后仍可能有在途调用走在老 trampoline 上。每次 hook 泄漏几十字节，换掉 use-after-free 的风险 |
+| 进程内有效 | 不跨进程、不持久化到磁盘重放 |
+
+### 21.9 和 `aiflex_trace` 是什么关系
+
+`aiflex_trace` 是 ObjC 方法级：`class_replaceMethod` 换掉 IMP，能用 `NSMethodSignature` 正确解析参数类型（因为方法有 type encoding），所以能记录对象参数的 `description`、能按签名转发。代价是只能用在 ObjC 实例方法上，且最多 3 个对象参数、返回值只能是 void 或对象。
+
+`aiflex_hook` 是机器码级：不知道签名，所以只能抓寄存器原值，但**任何有地址的代码都能挂**——C 函数、静态函数、Swift 方法、C++ 虚函数、系统库里没导出的内部函数。两者互补：
+
+| 场景 | 用哪个 |
+|---|---|
+| 想知道某个 ObjC 方法收了什么对象参数 | `aiflex_trace`（能读到 `description`） |
+| 想 hook 一个 C 函数 / 静态函数 | `aiflex_hook` |
+| 想把某条指令改成 `NOP` | `aiflex_hook(patch)` |
+| 想看某个方法的调用频率 | `aiflex_hook(record_args=false)` |
+| 想改方法返回值 | `aiflex_hook(patch)` 改 `mov w0` / `aiflex_trace` 不提供 |

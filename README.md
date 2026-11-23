@@ -4,9 +4,9 @@
 
 ```
 包标识   com.hoko20.aiflex3
-版本     3.2.0
-产物     FLEX++-3.2.0-arm64-rootless.dylib
-        com.hoko20.aiflex3_3.2.0_iphoneos-arm64.deb
+版本     3.3.0
+产物     FLEX++-3.3.0-arm64-rootless.dylib
+        com.hoko20.aiflex3_3.3.0_iphoneos-arm64.deb
 目标     iOS 15.0+ / arm64 / 越狱（rootless，安装到 /var/jb）
 构建     Theos library，ldid 假签名
 ```
@@ -25,7 +25,7 @@
 | `x/AppProtection` | 给调试面板自己上锁（`LAContext` 人脸/密码 + 时间码 + 计算器伪装），防止别人拿到手机就能翻数据 |
 | `x/filza` | 文件管理入口，含 Mach-O load commands 查看 |
 
-**MCP operation 层**：84 个 operation 归一到一个分发点，覆盖 observe / control / sensitive / script / trace / frida / disasm / dump 八组，详细契约见 [`MCP-CAPABILITIES.md`](MCP-CAPABILITIES.md)。
+**MCP operation 层**：93 个 operation 归一到一个分发点，覆盖 observe / control / sensitive / script / trace / frida / disasm / dump / hook 九组，详细契约见 [`MCP-CAPABILITIES.md`](MCP-CAPABILITIES.md)。
 
 **原生层只读观测（`aiflex_frida`，基于 frida-gum）**：模块与符号枚举（`modules` / `exports` / `imports`）、地址与符号互查（`resolve`）、线程列表（`threads`）、主线程符号化调用栈（`backtrace`）、映射区间（`memory_ranges`）、分页校验的内存读（`read_mem`，hex/utf8/u32/u64/ptr）、特征码扫描（`scan`，`??` 通配、4 秒预算）、崩溃记录（`crash_log`）。**只读**：不做 inline hook、不写内存、不打补丁、不开 Stalker。构建时没有 `frida/vendor` 会自动降级，不影响出包。
 
@@ -35,13 +35,15 @@
 
 **真实触摸注入**：`IOHIDEventCreateDigitizerEvent` + `UITouch` 私有 setter，tap / double_tap / long_press / swipe / drag / pinch / rotate。
 
+**代码改写（`aiflex_hook`，唯一的写类工具，独占「代码改写」开关）**：inline hook（`hook` / `unhook`，`GumInterceptor` trampoline）、调用记录（`events`，无锁环形缓冲抓 x0-x3 与返回值）、字节补丁（`patch`，只写 4 字节对齐的整指令）、逐条还原（`restore`）、端到端自检（`selftest`，attach `getpid` 真调三次再 detach 验证）。目标可以给地址、`module`+`name` 或 `class`+`selector`（`meta=true` 是类方法）。写入前三重校验（4 字节对齐 / 可执行页 / 非自身镜像），补丁自动备份 + 写后读回 + 不一致自动回滚。**只在本进程有效**：进程结束后 trampoline 与补丁都消失，审计日志只供查看、不自动重放。
+
 ## 2. 安装
 
 ```bash
 # 已构建的 deb
-dpkg -i com.hoko20.aiflex3_3.2.0_iphoneos-arm64.deb
+dpkg -i com.hoko20.aiflex3_3.3.0_iphoneos-arm64.deb
 # 或直接把 dylib 放进
-/var/jb/Library/MobileSubstrate/DynamicLibraries/FLEX++-3.2.0-arm64-rootless.dylib
+/var/jb/Library/MobileSubstrate/DynamicLibraries/FLEX++-3.3.0-arm64-rootless.dylib
 ```
 
 装完**重启目标 App**（不是重启桌面），FLEX 悬浮工具条上会出现 **AiFlex3** 按钮，点进去是控制面板。
@@ -53,7 +55,7 @@ dpkg -i com.hoko20.aiflex3_3.2.0_iphoneos-arm64.deb
 ```bash
 export THEOS=/opt/theos
 make clean package FINALPACKAGE=1 DEBUG=0 -j1
-# 产物：FLEX++-3.2.0-arm64-rootless.dylib + com.hoko20.aiflex3_3.2.0_iphoneos-arm64.deb
+# 产物：FLEX++-3.3.0-arm64-rootless.dylib + com.hoko20.aiflex3_3.3.0_iphoneos-arm64.deb
 ```
 
 CI：`.github/workflows/build.yml`，push 到 `main` 自动在 `macos-latest` 上构建并上传 artifact `AiFlex3`。注意该 workflow 只拉取 Theos 的 `vendor/include`、`vendor/lib` 两个子模块（`vendor/orion` 已私有，不能全量 init）。
@@ -88,6 +90,7 @@ FLEXAiFlexRuntime.m          operation 分发与语义层（弱引用 id 表、�
 FLEXAiFlexFrida.m            原生层只读观测（frida-gum）：模块/符号/线程/内存/扫描/调用栈/崩溃
 FLEXAiFlexDisasm.m           机器码分析（capstone）：反汇编/函数 CFG/符号解析/交叉引用/ObjC 方法体
 FLEXAiFlexDumper.m           二进制导出：按 segment 搬明文 Mach-O、cryptid 置零、逐页失败记账
+FLEXAiFlexHook.m             代码改写：inline hook / 字节补丁 / 无锁事件缓冲 / 备份还原 / 自检
 FLEXAiFlex3ViewController.m  控制面板：端点/令牌/工具开关/现场报告
 FLEXAiFlex3UI.m              面板视觉组件
 FLEXAiFlexTouchDriver.m      触摸注入后端
@@ -104,6 +107,7 @@ x/                           扩展工具（Decrypt / ClassDump / Disassembler /
 - 长操作（`sandbox_grep`、`capture_screen`、`view_tree`、快照）在主线程同步执行，大页面上会卡住宿主。
 - 反汇编、内存读、二进制导出都在**独立串行队列**上跑，不占主线程；但 `scan_functions` 与 `xref` 仍是同步阻塞调用，大区间会独占该队列几十毫秒到几秒，期间其它同组请求排队。
 - `aiflex_dump` 导出的 Mach-O 不带有效签名（`cryptid` 已改、哈希全对不上），**只能静态分析，不能安装或运行**。取文件用 `sandbox_read` 读 `relativePath`，单次上限 512 KiB，大文件靠 `next_offset` 续读。
+- `aiflex_hook` 是唯一会改变宿主行为的组，**默认关闭且必须单独授权**。打开后任何连上的客户端都能改运行中的指令：`patch` 写错位置会让目标进程立刻崩溃，`hook` 高频函数会明显拖慢 App。所有改动只在本进程内有效，进程结束后全部消失；`restore` 依赖内存中的备份，**崩溃重启后无法从磁盘重放**。改动前先跑 `selftest`，改完用 `aiflex_read` 复核，不要凭 hook 返回成功推断逻辑正确。
 
 ## 7. 许可
 
