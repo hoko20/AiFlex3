@@ -68,6 +68,34 @@ jobs:
           test -f frida/vendor/libfrida-gum.a
           ls -lh frida/vendor
 
+      - name: Strip bundled capstone from gum
+        run: |
+          set -eo pipefail
+          # frida-gum 静态库内置了 capstone 5.x，仓库自带 x/capstone 6.0，两边
+          # cs_open / Mapping / arch_* 全部重名，链接期直接 duplicate symbol。
+          # 两者 ABI 不同（6.0 改过 cs_insn / cs_detail），不能简单二选一：
+          #   - 保留 x/capstone：UCDisassembler 用 6.0 的头文件，实现必须与头一致；
+          #   - 剥掉 gum 那份：让 gum 内部对 cs_* 的引用由 x/capstone 满足。
+          # AiFlex3 不启用 Stalker，gum 的 relocator 不会在运行时调用 capstone，
+          # 所以这个"借用"只发生在链接期，不产生 ABI 风险。
+          WORK=$(mktemp -d)
+          cp frida/vendor/libfrida-gum.a "$WORK/full.a"
+          cd "$WORK"
+          ar x full.a
+          BEFORE=$(ls *.o | wc -l)
+          # capstone 核心与各架构：核心文件名固定，架构成员是 arch_<大写架构>_*
+          # （gum 自己的是 arch-arm64_ / arch-x86_ 小写带连字符，不会误伤）
+          rm -f cs.c.o Mapping.c.o MCInst.c.o MCInstrDesc.c.o \
+                MCRegisterInfo.c.o MCInstPrinter.c.o SStream.c.o utils.c.o
+          rm -f arch_[A-Z]*.o
+          AFTER=$(ls *.o | wc -l)
+          echo "gum objects: $BEFORE -> $AFTER (dropped $((BEFORE-AFTER)) capstone objects)"
+          test $((BEFORE-AFTER)) -gt 10
+          ar rcs gum-stripped.a *.o
+          cd "$OLDPWD"
+          cp "$WORK/gum-stripped.a" frida/vendor/libfrida-gum.a
+          ls -lh frida/vendor/libfrida-gum.a
+
       - name: Diagnose gum symbols
         run: |
           # 只做诊断不失败：gum 静态库内置一份 capstone，与仓库 x/capstone 同名符号
