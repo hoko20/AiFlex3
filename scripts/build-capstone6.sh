@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# 编译 Capstone 6.0（仅 AArch64）为静态库，并把它的全局符号加 flx6 前缀。
+# 编译 Capstone 6.0（仅 AArch64）为静态库，并把它的公共 API 加 flx6 前缀。
 #
 # 为什么需要前缀：libfrida-gum.a 内置一份 Capstone 5.0.1，aiflex_hook 走 gum
 # Interceptor 时 arm64 relocator 会硬引用 cs_arch_register_arm64，那份剥不掉。
 # 两份实现若同名会 duplicate symbol；共用一份又因 cs_detail 布局不同
 # （MAX_IMPL_W_REGS 47 vs 20、union 偏移 154 vs 92）读出错位的 arm64 operands。
-# 所以只重命名 6.0 侧已定义的全局符号，让两侧各自 ABI 自洽、并存于一个 dylib。
+# 所以给 6.0 侧的全部公共函数加前缀，让两侧各自 ABI 自洽、并存于一个 dylib。
 #
+# 前缀在编译期用 -D 完成（等价于 objcopy --redefine-sym 但不需要额外工具）：
+# 定义和所有引用一起换名，undefined 的 libc 符号完全不受影响。
 # 这一步只在 CI / 有 Xcode 的 macOS 上跑；缺 Xcode 时维持 5.0.1 行为。
 set -euo pipefail
 
@@ -15,8 +17,7 @@ cd "$ROOT"
 
 SRC_DIR="$ROOT/x/capstone6"
 OUT_DIR="$SRC_DIR/.build"
-LIB_DIR="$SRC_DIR/lib"
-LIB="$LIB_DIR/libcapstone6.a"
+LIB="$SRC_DIR/lib/libcapstone6.a"
 PREFIX="flx6"
 
 if ! command -v xcrun >/dev/null 2>&1; then
@@ -27,15 +28,25 @@ fi
 SDK="$(xcrun -sdk iphoneos --show-sdk-path)"
 CC="$(xcrun -sdk iphoneos --find clang)"
 AR="$(xcrun -sdk iphoneos --find ar)"
-OBJCOPY="${CAPSTONE6_OBJCOPY:-$(xcrun -find llvm-objcopy 2>/dev/null || command -v llvm-objcopy || true)}"
-
-if [[ -z "$OBJCOPY" || ! -x "$OBJCOPY" ]]; then
-    echo "[capstone6] llvm-objcopy not found; cannot build isolated capstone 6" >&2
-    exit 1
-fi
 
 rm -rf "$OUT_DIR"
-mkdir -p "$OUT_DIR" "$LIB_DIR"
+mkdir -p "$OUT_DIR" "$SRC_DIR/lib"
+
+# 从 6.0 头文件自动提取全部 CAPSTONE_API 函数名，避免手抄漏掉。
+FUNCS=()
+while IFS= read -r name; do
+    [[ -n "$name" ]] && FUNCS+=("$name")
+done < <(
+    cat "$SRC_DIR"/include/capstone/*.h \
+        | grep 'CAPSTONE_API' \
+        | sed -E 's/.*CAPSTONE_API[[:space:]]+([A-Za-z_][A-Za-z0-9_]*).*/\1/' \
+        | grep '^cs_' \
+        | sort -u
+)
+if (( ${#FUNCS[@]} == 0 )); then
+    echo "[capstone6] failed to extract public API names" >&2
+    exit 1
+fi
 
 CFLAGS=(
     -arch arm64
@@ -47,6 +58,9 @@ CFLAGS=(
     -DCAPSTONE_USE_SYS_DYN_MEM
     -I"$SRC_DIR/include"
 )
+for name in "${FUNCS[@]}"; do
+    CFLAGS+=("-D${name}=${PREFIX}_${name}")
+done
 
 SRCS=(
     "$SRC_DIR/cs.c"
@@ -74,20 +88,7 @@ for src in "${SRCS[@]}"; do
     "$CC" "${CFLAGS[@]}" -c "$src" -o "$obj"
 done
 
-# 只重命名「已定义的全局符号」。undefined（malloc/memcpy/printf 等 libc 符号）
-# 必须保持原名，否则链接期会找不到系统函数。objcopy 的 --redefine-sym 会
-# 同时改写定义和所有引用点，所以这批 .o 之间的内部调用会自动跟着走。
-for obj in "$OUT_DIR"/*.o; do
-    args=()
-    while IFS= read -r sym; do
-        [[ -n "$sym" ]] && args+=(--redefine-sym "$sym=${PREFIX}${sym}")
-    done < <(nm -gU "$obj" 2>/dev/null | awk 'NF >= 3 {print $NF}' | grep '^_' || true)
-    if (( ${#args[@]} > 0 )); then
-        "$OBJCOPY" "${args[@]}" "$obj"
-    fi
-done
-
 "$AR" rcs "$LIB" "$OUT_DIR"/*.o
-echo "[capstone6] built $LIB ($(find "$OUT_DIR" -name '*.o' | wc -l | tr -d ' ') objects)"
+echo "[capstone6] built $LIB (${#SRCS[@]} objects, ${#FUNCS[@]} prefixed APIs)"
 echo "[capstone6] prefixed symbols sample:"
 nm -gU "$LIB" 2>/dev/null | awk 'NF >= 3 {print $NF}' | grep "^${PREFIX}_cs_" | sort -u | head -12 || true

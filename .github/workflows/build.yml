@@ -96,8 +96,8 @@ jobs:
         run: |
           bash scripts/build-capstone6.sh
           test -f x/capstone6/lib/libcapstone6.a
-          echo "prefixed flx6_cs_open:"
-          nm -gU x/capstone6/lib/libcapstone6.a 2>/dev/null | grep -c ' flx6_cs_open$' || true
+          echo "prefixed _flx6_cs_open:"
+          nm -gU x/capstone6/lib/libcapstone6.a 2>/dev/null | grep -c ' _flx6_cs_open$' || true
           n=$(nm -gU x/capstone6/lib/libcapstone6.a 2>/dev/null | grep -cE ' _cs_(open|close|disasm|free)$' || true)
           if [ "$n" != "0" ]; then
             echo "capstone6 里仍有 $n 个未加前缀的 cs_* 符号，会与 gum 冲突"

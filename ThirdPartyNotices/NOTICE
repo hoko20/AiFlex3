@@ -61,8 +61,8 @@ prefix so each keeps its own ABI:
   copy cannot be stripped. All other consumers keep using it.
 * 6.0 — sources under x/capstone6/, compiled for AArch64 only by
   scripts/build-capstone6.sh into libcapstone6.a. Its defined global symbols
-  are renamed with a `flx6` prefix via llvm-objcopy --redefine-sym; undefined
-  libc symbols stay untouched. x/Disassembler/UCDisassembler.m consumes this
+  are renamed with a `flx6` prefix at compile time via -D macros (definitions
+  and references change together, undefined libc symbols stay untouched). x/Disassembler/UCDisassembler.m consumes this
   copy through the prefixed API. Capstone 6 decodes SME2, SVE2p1, MTE4 and
   Apple AMX instructions found on A19 Pro; 5.0.1's decoder table predates all
   of those extensions.

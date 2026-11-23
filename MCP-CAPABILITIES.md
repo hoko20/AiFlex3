@@ -881,7 +881,7 @@ CI 在 `Install Theos` 之后追加 `Fetch frida-gum devkit`：取 `releases/lat
 
 ### 17.4 已知风险与处置
 
-1. **capstone 符号冲突（已用前缀隔离解决）**：gum 静态库内 vendored 一份 capstone 5.0.1，其 arm64 relocator 硬引用 `cs_arch_register_arm64`，`aiflex_hook` 走 Interceptor 时必然拉入，这份剥不掉。A19 Pro 的 SME2 / SVE2p1 / MTE4 只有 capstone 6.0（LLVM 17/18 解码表）能识别，5.0.1 的 LLVM 7 表对这些扩展一个枚举都没有。现在的做法（`3.5.0` 起）：`scripts/build-capstone6.sh` 单独编译 `x/capstone6/` 的 AArch64 源码，用 `llvm-objcopy --redefine-sym` 只重命名**已定义的全局符号**为 `flx6_*`（undefined 的 libc 符号保持原名），产出 `libcapstone6.a`；`UCDisassembler.m` 用同前缀宏 + 相对路径的 6.0 头消费它。两套实现并存、各自 ABI 自洽。两套头不在同一个 `-I` 搜索域，避免 `cs_detail` 布局混用（union 偏移 92 vs 154）。代价约 +1.5~2.5 MB dylib。
+1. **capstone 符号冲突（已用前缀隔离解决）**：gum 静态库内 vendored 一份 capstone 5.0.1，其 arm64 relocator 硬引用 `cs_arch_register_arm64`，`aiflex_hook` 走 Interceptor 时必然拉入，这份剥不掉。A19 Pro 的 SME2 / SVE2p1 / MTE4 只有 capstone 6.0（LLVM 17/18 解码表）能识别，5.0.1 的 LLVM 7 表对这些扩展一个枚举都没有。现在的做法（`3.5.0` 起）：`scripts/build-capstone6.sh` 单独编译 `x/capstone6/` 的 AArch64 源码，用编译期 `-Dcs_xxx=flx6_cs_xxx` 给全部 `CAPSTONE_API` 函数加前缀（定义与引用一起换名，undefined 的 libc 符号不受影响），产出 `libcapstone6.a`；`UCDisassembler.m` 用同前缀宏 + 相对路径的 6.0 头消费它。两套实现并存、各自 ABI 自洽。两套头不在同一个 `-I` 搜索域，避免 `cs_detail` 布局混用（union 偏移 92 vs 154）。代价约 +1.5~2.5 MB dylib。
 2. **arm64e / PAC**：地址一律经 `gum_module_get_range` / `gum_module_find_export_by_name` 获取，不自己从函数指针里截位。
 3. **崩溃放大**：这就是本组只做只读的原因——写类操作没有 selector 黑名单可依赖，一旦写错位置，崩溃点与操作时刻解耦、无法归因。
 4. **体积与许可**：dylib 约 +4~5 MB；frida 为 wxWindows Library Licence 3.1，已在 `ThirdPartyNotices/NOTICE` 补条目，说明静态链接来源 tag 与可重链接材料位置。
