@@ -35,7 +35,11 @@ typedef NS_ENUM(NSInteger, CaptureTab) {
 @property (nonatomic, copy) NSString *switchKey;
 @property (nonatomic, copy) NSString *desc;
 @property (nonatomic, assign) BOOL defaultValue;
+/// YES 表示这个开关必须留在最早可读的存储里（NSUserDefaults），
+/// 因为它的消费方是 UCDecryptTool 的 +load 阶段，那时 SQLite 表还没建。
+@property (nonatomic, assign) BOOL usesUserDefaults;
 + (instancetype)itemWithTitle:(NSString *)title key:(NSString *)key desc:(NSString *)desc default:(BOOL)def;
++ (instancetype)defaultsItemWithTitle:(NSString *)title key:(NSString *)key desc:(NSString *)desc;
 @end
 
 @implementation CaptureSwitchItem
@@ -45,6 +49,13 @@ typedef NS_ENUM(NSInteger, CaptureTab) {
     item.switchKey = key;
     item.desc = desc;
     item.defaultValue = def;
+    item.usesUserDefaults = NO;
+    return item;
+}
+
++ (instancetype)defaultsItemWithTitle:(NSString *)title key:(NSString *)key desc:(NSString *)desc {
+    CaptureSwitchItem *item = [self itemWithTitle:title key:key desc:desc default:NO];
+    item.usesUserDefaults = YES;
     return item;
 }
 @end
@@ -282,6 +293,9 @@ typedef NS_ENUM(NSInteger, CaptureTab) {
         self.title = @"功能设置";
         
         _switchItems = @[
+            [CaptureSwitchItem defaultsItemWithTitle:@"启动时自动安装"
+                                                key:UCDecryptAutoStartDefaultsKey
+                                               desc:@"默认关闭。开启后 dylib 注入即装全部 hook，能抓到 App 启动流量；关闭则只在点「抓取」时安装"],
             [CaptureSwitchItem itemWithTitle:@"总开关" key:@"zongkaiguan" desc:@"控制所有解密/抓包功能" default:NO],
             [CaptureSwitchItem itemWithTitle:@"网络抓包增强" key:@"zhaiyaokaiguan" desc:@"捕获 URL 响应并自动解密" default:NO],
             [CaptureSwitchItem itemWithTitle:@"加密算法捕获" key:@"jiamisuanfakaiguan" desc:@"记录 AES/DES/RSA 等算法调用" default:NO],
@@ -344,9 +358,14 @@ typedef NS_ENUM(NSInteger, CaptureTab) {
         [sw addTarget:self action:@selector(switchChanged:) forControlEvents:UIControlEventValueChanged];
         
         NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
-        BOOL isOn = [[DatabaseManager sharedManager] getSwitch:item.switchKey
-                                                      bundleID:bundleID
-                                                  defaultValue:item.defaultValue];
+        BOOL isOn = NO;
+        if (item.usesUserDefaults) {
+            isOn = [UCDecryptTool decryptAutoStartEnabled];
+        } else {
+            isOn = [[DatabaseManager sharedManager] getSwitch:item.switchKey
+                                                     bundleID:bundleID
+                                                 defaultValue:item.defaultValue];
+        }
         sw.on = isOn;
         
         cell.accessoryView = sw;
@@ -431,10 +450,21 @@ typedef NS_ENUM(NSInteger, CaptureTab) {
 - (void)switchChanged:(UISwitch *)sender {
     CaptureSwitchItem *item = self.switchItems[sender.tag];
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
-    [[DatabaseManager sharedManager] setSwitch:item.switchKey
-                                      bundleID:bundleID
-                                         value:sender.isOn];
-    
+
+    if (item.usesUserDefaults) {
+        [UCDecryptTool setDecryptAutoStartEnabled:sender.isOn];
+        // 关掉时 hook 已经装进来了，无法安全回滚，如实告知。
+        if (!sender.isOn && [UCDecryptTool decryptHooksInstalled]) {
+            UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:
+                                     [NSIndexPath indexPathForRow:sender.tag inSection:0]];
+            cell.detailTextLabel.text = @"已关闭：下次启动不再自动安装。本次运行中已装载的 hook 需重启 App 才会消失";
+        }
+    } else {
+        [[DatabaseManager sharedManager] setSwitch:item.switchKey
+                                         bundleID:bundleID
+                                            value:sender.isOn];
+    }
+
     NSLog(@"[CaptureSettings] %@ 开关: %@", item.title, sender.isOn ? @"开启" : @"关闭");
 }
 

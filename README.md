@@ -19,7 +19,7 @@
 
 | 模块 | 内容 |
 |---|---|
-| `x/Decrypt` | 运行时抓明文：fishhook 打 `SSL_get_psk_identity`、OpenSSL `EVP_*` / `AES_*`、CommonCrypto 与哈希入口、`NSURLResponse` 回调，落 SQLite |
+| `x/Decrypt` | 运行时抓明文：fishhook 打 `SSL_get_psk_identity`、OpenSSL `EVP_*` / `AES_*`、CommonCrypto 与哈希入口、`NSURLResponse` 回调，落 SQLite。**注入后不自动装 hook**，点「抓取」才装；要抓 App 启动流量需显式打开 `AiFlex3DecryptAutoStart`（默认关） |
 | `x/ClassDump` | 运行时类导出，含 Swift dumper 与打包 |
 | `x/Disassembler` | capstone 5.0.1 AArch64 反汇编、函数边界识别、基本块 CFG、交叉引用、符号化；界面支持**汇编列表 / CFG 图形**双视图切换与 `.asm` 导出（**无伪代码生成器**） |
 | `x/AppProtection` | 给调试面板自己上锁（`LAContext` 人脸/密码 + 时间码 + 计算器伪装），防止别人拿到手机就能翻数据 |

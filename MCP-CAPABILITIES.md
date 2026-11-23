@@ -87,13 +87,23 @@
 | 存储 | 文件浏览、UserDefaults、Keychain、数据库 |
 | DoKit 移植 | AppInfo、CPU、性能、卡顿、内存泄漏、崩溃监控、日志（查看/过滤/导出）、网络历史、弱网、Mock、H5、取色、组件、清理、Database、悬浮窗、视觉工具 |
 | Lookin / Reveal 式 | `FLEXLookinInspector`、`FLEXRevealLikeInspector`、`FHS*` 快照、`RTB*` 运行时浏览 |
-| `x/Decrypt` | 抓包解密：fishhook 打 `SSL_get_psk_identity`、OpenSSL `EVP_*`/`AES_*`、`CFNetworkCopySystemProxySettings`、脚本解码 |
+| `x/Decrypt` | 抓包解密：fishhook 打 `SSL_get_psk_identity`、OpenSSL `EVP_*`/`AES_*`、`CFNetworkCopySystemProxySettings`、脚本解码。注入后**不**自动装 hook，点「抓取」才装 |
 | `x/ClassDump` | 类头文件导出（含 Swift dumper + zip） |
 | `x/Disassembler` | capstone 5.0.1 AArch64 反汇编 + CFG 图形 / 汇编列表双视图（无伪代码生成器） |
 | `x/AppProtection` | App 保护绕过检测 |
 | `x/filza` | 文件管理入口 |
 
 > `tool_catalog` 会返回每个入口的 `agentOpenSupported`。`extension.filza` / `extension.capture` / `extension.protection` 明确不对 AI 开放（带 `reason`），属设计上的硬边界。
+
+**抓取 hook 的安装时机**：`x/Decrypt` 的 6 组 fishhook 默认**不随注入自动安装**，只有点 FLEX 工具栏「抓取」才会装（`presentDecryptPanelFromViewController:` 内部触发）。若需要覆盖 App 启动阶段的流量，必须显式打开自动安装：
+
+```
+defaults write <宿主 bundleID> AiFlex3DecryptAutoStart -bool YES
+# 或（优先级更高，仅对 launchctl 子进程生效）
+launchctl setenv AIFLEX3_DECRYPT_AUTOSTART 1
+```
+
+图形入口在「抓取 → 功能设置 → 启动时自动安装」，与环境变量共用同一语义。开关关闭**不会卸载**已装载的 hook —— fishhook 改写的符号表指针无法安全回滚，彻底停用只能重启进程。
 
 ### 0.7 当前明确没有的能力（边界）
 
