@@ -359,7 +359,13 @@ static BOOL uc_safe_read_memory(uint64_t address, void *buffer, size_t size) {
                 const char *baseName = cs_reg_name(g_capstoneHandle, op->mem.base);
                 operand.memoryBaseReg = baseName ? [NSString stringWithUTF8String:baseName] : @"?";
                 operand.memoryOffset = op->mem.disp;
+                // 6.0 的 op->mem.index 是 aarch64_reg，兼容头里的
+                // ARM64_REG_INVALID 是另一套 enum，直接比较触发 -Wenum-compare。
+#ifdef AIFLEX_USE_CAPSTONE6
+                if (op->mem.index != AARCH64_REG_INVALID) {
+#else
                 if (op->mem.index != ARM64_REG_INVALID) {
+#endif
                     const char *idxName = cs_reg_name(g_capstoneHandle, op->mem.index);
                     operand.memoryIndexReg = idxName ? [NSString stringWithUTF8String:idxName] : @"?";
                 }
