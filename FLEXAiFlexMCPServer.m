@@ -225,7 +225,10 @@ static NSString *LocalIPv4(void){
 + (NSString *)endpointHost{
  NSString *host=[NSUserDefaults.standardUserDefaults stringForKey:DXMCPHostKey];
  host=[host stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
- return host.length?host:@"127.0.0.1";
+ // 默认取本机局域网 IP（第一个非 loopback 的 en* 网卡），取不到才回落 127.0.0.1。
+ // 这样新装/未手动设置时桌面客户端直接能连，不必再进面板改一次地址。
+ // 用户一旦在面板手动设过（含显式设成 127.0.0.1），这里就尊重显式值。
+ return host.length?host:LocalIPv4();
 }
 + (BOOL)setEndpointHost:(NSString *)host{
  NSString *value=[host stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
