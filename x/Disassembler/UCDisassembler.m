@@ -4,7 +4,7 @@
 #import <mach/vm_map.h>
 #import <dlfcn.h>
 #include <capstone/capstone.h>
-#include <capstone/aarch64.h>
+#include <capstone/arm64.h>
 
 #pragma mark - 静态变量
 
@@ -307,21 +307,21 @@ static BOOL uc_safe_read_memory(uint64_t address, void *buffer, size_t size) {
     
     if (!insn->detail) return operands;
     
-    cs_aarch64 *arm64 = &(insn->detail->aarch64);
+    cs_arm64 *arm64 = &(insn->detail->arm64);
     
     for (int i = 0; i < arm64->op_count; i++) {
-        cs_aarch64_op *op = &(arm64->operands[i]);
+        cs_arm64_op *op = &(arm64->operands[i]);
         UCDisasmOperand *operand = [[UCDisasmOperand alloc] init];
         
         switch (op->type) {
-            case AARCH64_OP_REG: {
+            case ARM64_OP_REG: {
                 operand.type = UCDisasmOperandTypeRegister;
                 const char *regName = cs_reg_name(g_capstoneHandle, op->reg);
                 operand.registerName = regName ? [NSString stringWithUTF8String:regName] : @"?";
                 operand.text = operand.registerName;
                 break;
             }
-            case AARCH64_OP_IMM:
+            case ARM64_OP_IMM:
                 operand.type = UCDisasmOperandTypeImmediate;
                 operand.immediateValue = (uint64_t)op->imm;
                 if (op->imm < 0) {
@@ -330,12 +330,12 @@ static BOOL uc_safe_read_memory(uint64_t address, void *buffer, size_t size) {
                     operand.text = [NSString stringWithFormat:@"#0x%llx", (unsigned long long)op->imm];
                 }
                 break;
-            case AARCH64_OP_MEM: {
+            case ARM64_OP_MEM: {
                 operand.type = UCDisasmOperandTypeMemory;
                 const char *baseName = cs_reg_name(g_capstoneHandle, op->mem.base);
                 operand.memoryBaseReg = baseName ? [NSString stringWithUTF8String:baseName] : @"?";
                 operand.memoryOffset = op->mem.disp;
-                if (op->mem.index != AARCH64_REG_INVALID) {
+                if (op->mem.index != ARM64_REG_INVALID) {
                     const char *idxName = cs_reg_name(g_capstoneHandle, op->mem.index);
                     operand.memoryIndexReg = idxName ? [NSString stringWithUTF8String:idxName] : @"?";
                 }
@@ -350,7 +350,7 @@ static BOOL uc_safe_read_memory(uint64_t address, void *buffer, size_t size) {
                 }
                 break;
             }
-            case AARCH64_OP_FP:
+            case ARM64_OP_FP:
                 operand.type = UCDisasmOperandTypeFPRegister;
                 operand.text = [NSString stringWithFormat:@"#%g", op->fp];
                 break;

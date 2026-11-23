@@ -48,10 +48,18 @@ $(LIBRARY_NAME)_FILES = $(shell find . \( -name '*.m' -o -name '*.mm' -o -name '
     grep -v "x/capstone/" | \
     grep -v "frida/vendor/")
 
-# Capstone核心文件（只包含ARM/ARM64架构）
-CAPSTONE_CORE = $(shell find x/capstone -maxdepth 1 -name "*.c")
-CAPSTONE_ARCH = $(shell find x/capstone/arch/AArch64 -name "*.c")
-$(LIBRARY_NAME)_FILES += $(CAPSTONE_CORE) $(CAPSTONE_ARCH)
+# Capstone 只保留头文件，实现由 frida-gum 静态库提供。
+#
+# 原因：libfrida-gum.a 内置了一份完整 capstone 5.0.1（cs.c/Mapping/MCInst/arch_*），
+# 与仓库自己的 capstone 会全量重名，链接期必然 duplicate symbol。两边 ABI 又不同
+# （cs_detail 里 MAX_IMPL_W_REGS 是 47 vs 20、MAX_NUM_GROUPS 16 vs 8，union 偏移
+# 92 vs 154），所以既不能简单保留一份，也不能靠前缀重命名糊过去。
+#
+# 处置：把 x/capstone/include 降到 5.0.1（与 gum 内置版本一致），停止编译
+# x/capstone/*.c，x/Disassembler 改用 5.0 的 cs_arm64 API（#include <capstone/arm64.h>）。
+# 这样全进程只有一份 capstone 实现，且 UCDisassembler 用的头文件与实现同版本。
+# 注意：x/capstone 下的 .c 仍是 6.0 源码，不要重新加入编译，否则立刻回到冲突状态。
+CAPSTONE_INCLUDE = -I./x/capstone/include
 
 # 必要的框架和库
 $(LIBRARY_NAME)_FRAMEWORKS = Foundation UIKit CoreGraphics CoreFoundation Security Network
@@ -83,7 +91,7 @@ $(LIBRARY_NAME)_CFLAGS = -fobjc-arc -include flex_fishhook.h \
                  -DCAPSTONE_HAS_AARCH64 \
                  -DCAPSTONE_USE_SYS_DYN_MEM \
                  -I./x \
-                 -I./x/capstone/include
+                 $(CAPSTONE_INCLUDE)
 
 # 编译兼容性
 $(LIBRARY_NAME)_CCFLAGS = -std=c++17 -Wno-unused-function -Wno-objc-missing-property-synthesis
@@ -101,7 +109,8 @@ $(LIBRARY_NAME)_CFLAGS += -miphoneos-version-min=15.0
 FRIDA_VENDOR = ./frida/vendor
 ifneq ($(wildcard $(FRIDA_VENDOR)/libfrida-gum.a),)
 $(LIBRARY_NAME)_CFLAGS += -I$(FRIDA_VENDOR) -DGUM_STATIC
-$(LIBRARY_NAME)_LDFLAGS += $(FRIDA_VENDOR)/libfrida-gum.a -lc++
+# -liconv：gum 自带 iconv 实现，需要系统 libiconv 的 locale_charset。
+$(LIBRARY_NAME)_LDFLAGS += $(FRIDA_VENDOR)/libfrida-gum.a -lc++ -liconv
 else
 $(LIBRARY_NAME)_CFLAGS += -DGX_NO_GUM=1
 endif
