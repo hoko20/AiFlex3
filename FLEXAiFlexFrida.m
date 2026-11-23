@@ -11,7 +11,20 @@
 #include "frida-gum.h"
 #endif
 
+// 本文件按 frida-gum 17.27.4 的真实头文件书写。几个与旧版本不同、容易踩的点：
+//   * 没有 GumModuleDetails：gum_process_enumerate_modules 的回调直接给 GumModule *。
+//   * 没有 gum_version_string：引擎版本只能由构建时的 devkit 决定，这里不做谎报。
+//   * 没有 gum_memory_enumerate_ranges，用的是 gum_process_enumerate_ranges。
+//   * GumExportDetails / GumImportDetails 的 type 是枚举（不是字符串），
+//     GumImportDetails.module 是 const gchar *（不是 GumModule *）。
+//   * GumThreadDetails.cpu_context 是值不是指针，state 也是枚举。
+//   * gum_module_load 需要第二个 GError ** 参数；gum_module_get_range 返回
+//     const GumMemoryRange *（不再有 size 输出参数）。
+//   * gum 自带 gum_memory_scan + GumMatchPattern，特征码扫描不需要自己实现匹配。
+
 #pragma mark - 常量
+
+#define GXMaxBacktraceDepth 96
 
 static const NSUInteger GXDefaultLimit      = 200;
 static const NSUInteger GXMaxLimit          = 2000;
@@ -22,8 +35,8 @@ static const NSUInteger GXDefaultScanBytes  = 32 * 1024 * 1024;
 static const NSUInteger GXMaxScanBytes      = 256 * 1024 * 1024;
 static const NSUInteger GXDefaultMatches    = 20;
 static const NSUInteger GXMaxMatches        = 100;
-static const NSUInteger GXMaxBacktraceDepth = 96;
 static const double     GXScanBudget        = 4.0;
+static const size_t     GXMaxSingleRegion   = 64 * 1024 * 1024;
 
 static NSString * const GXErrorUnavailable =
     @"Frida 引擎未编入当前构建（frida-gum devkit 缺失）。请在 CI 中拉取 frida-gum 后重新打包。";
@@ -81,6 +94,11 @@ static NSString *GXBaseName(const char *path) {
     return [NSString stringWithUTF8String:name] ?: @"";
 }
 
+static NSString *GXStringFromCString(const char *text) {
+    if (!text) return @"";
+    return [NSString stringWithUTF8String:text] ?: @"";
+}
+
 #pragma mark - 引擎初始化
 
 static BOOL GXEnsureEngine(void) {
@@ -98,28 +116,58 @@ static BOOL GXEnsureEngine(void) {
 #endif
 }
 
-#pragma mark - 回调上下文（ARC 下 C 结构体不能持有 strong 引用，统一走 void *）
+#pragma mark - 回调（只在 gum 分支编译）
 
 #ifndef GX_NO_GUM
 
-static gboolean GXCollectModule(const GumModuleDetails *details, gpointer user_data) {
+static gboolean GXCollectModule(GumModule *module, gpointer user_data) {
     NSMutableArray *out = (__bridge NSMutableArray *)user_data;
-    if (!details || !details->range) return TRUE;
+    if (!module) return TRUE;
+    const GumMemoryRange *range = gum_module_get_range(module);
     [out addObject:@{
-        @"name": details->name ? [NSString stringWithUTF8String:details->name] : @"",
-        @"path": details->path ? [NSString stringWithUTF8String:details->path] : @"",
-        @"base": [NSString stringWithFormat:@"0x%llx", (unsigned long long)details->range->base_address],
-        @"size": @(details->range->size),
+        @"name": GXStringFromCString(gum_module_get_name(module)),
+        @"path": GXStringFromCString(gum_module_get_path(module)),
+        @"version": GXStringFromCString(gum_module_get_version(module)),
+        @"base": [NSString stringWithFormat:@"0x%llx",
+                 (unsigned long long)(range ? range->base_address : 0)],
+        @"size": @(range ? range->size : 0),
     }];
     return TRUE;
+}
+
+static NSString *GXExportTypeString(GumExportType type) {
+    switch (type) {
+        case GUM_EXPORT_FUNCTION: return @"function";
+        case GUM_EXPORT_VARIABLE: return @"variable";
+        default: return @"unknown";
+    }
+}
+
+static NSString *GXImportTypeString(GumImportType type) {
+    switch (type) {
+        case GUM_IMPORT_FUNCTION: return @"function";
+        case GUM_IMPORT_VARIABLE: return @"variable";
+        default: return @"unknown";
+    }
+}
+
+static NSString *GXThreadStateString(GumThreadState state) {
+    switch (state) {
+        case GUM_THREAD_RUNNING: return @"running";
+        case GUM_THREAD_STOPPED: return @"stopped";
+        case GUM_THREAD_WAITING: return @"waiting";
+        case GUM_THREAD_UNINTERRUPTIBLE: return @"uninterruptible";
+        case GUM_THREAD_HALTED: return @"halted";
+        default: return @"unknown";
+    }
 }
 
 static gboolean GXCollectExport(const GumExportDetails *details, gpointer user_data) {
     NSMutableArray *out = (__bridge NSMutableArray *)user_data;
     if (!details) return TRUE;
     [out addObject:@{
-        @"name": details->name ? [NSString stringWithUTF8String:details->name] : @"",
-        @"type": details->type ? [NSString stringWithUTF8String:details->type] : @"unknown",
+        @"name": GXStringFromCString(details->name),
+        @"type": GXExportTypeString(details->type),
         @"address": [NSString stringWithFormat:@"0x%llx", (unsigned long long)details->address],
     }];
     return TRUE;
@@ -128,27 +176,23 @@ static gboolean GXCollectExport(const GumExportDetails *details, gpointer user_d
 static gboolean GXCollectImport(const GumImportDetails *details, gpointer user_data) {
     NSMutableArray *out = (__bridge NSMutableArray *)user_data;
     if (!details) return TRUE;
-    NSMutableDictionary *entry = [@{
-        @"name": details->name ? [NSString stringWithUTF8String:details->name] : @"",
-        @"type": details->type ? [NSString stringWithUTF8String:details->type] : @"unknown",
-    } mutableCopy];
-    if (details->module) {
-        const gchar *moduleName = gum_module_get_name(details->module);
-        entry[@"fromModule"] = moduleName ? [NSString stringWithUTF8String:moduleName] : @"";
-    }
-    [out addObject:entry];
+    [out addObject:@{
+        @"name": GXStringFromCString(details->name),
+        @"type": GXImportTypeString(details->type),
+        @"fromModule": GXStringFromCString(details->module),
+        @"slot": [NSString stringWithFormat:@"0x%llx", (unsigned long long)details->slot],
+    }];
     return TRUE;
 }
 
 static gboolean GXCollectThread(const GumThreadDetails *details, gpointer user_data) {
     NSMutableArray *out = (__bridge NSMutableArray *)user_data;
     if (!details) return TRUE;
-    // cpu_context 可能为 NULL；寄存器内容属于敏感数据，这里刻意不读。
+    // cpu_context 是值类型，寄存器内容属于敏感数据，这里刻意不读。
     [out addObject:@{
         @"id": @(details->id),
-        @"name": details->name ? [NSString stringWithUTF8String:details->name] : @"",
-        @"state": details->state ? [NSString stringWithUTF8String:details->state] : @"",
-        @"contextAvailable": @(details->cpu_context != NULL),
+        @"name": GXStringFromCString(details->name),
+        @"state": GXThreadStateString(details->state),
     }];
     return TRUE;
 }
@@ -162,7 +206,7 @@ typedef struct {
 
 static gboolean GXCollectRangeEntry(const GumRangeDetails *details, gpointer user_data) {
     GXRangeContext *ctx = (GXRangeContext *)user_data;
-    if (!details) return TRUE;
+    if (!details || !details->range) return TRUE;
     ctx->total++;
     NSMutableArray *ranges = (__bridge NSMutableArray *)ctx->ranges;
     if (ranges.count >= ctx->limit) return TRUE;
@@ -174,22 +218,19 @@ static gboolean GXCollectRangeEntry(const GumRangeDetails *details, gpointer use
         return TRUE;
     }
 
+    GumAddress base = details->range->base_address;
+    gsize size = details->range->size;
     [ranges addObject:@{
-        @"start": [NSString stringWithFormat:@"0x%llx",
-                   (unsigned long long)details->range.base_address],
-        @"end": [NSString stringWithFormat:@"0x%llx",
-                 (unsigned long long)(details->range.base_address + details->range.size)],
-        @"size": @(details->range.size),
+        @"start": [NSString stringWithFormat:@"0x%llx", (unsigned long long)base],
+        @"end": [NSString stringWithFormat:@"0x%llx", (unsigned long long)(base + size)],
+        @"size": @(size),
         @"protection": protection,
     }];
     return TRUE;
 }
 
 typedef struct {
-    uint8_t *bytes;
-    uint8_t *mask;
-    size_t length;
-    size_t anchor;          // 第一个非通配字节的位置，用于 memchr 跳跃
+    GumMatchPattern *pattern;
     void *matches;          // __bridge NSMutableArray *
     BOOL hasModuleRange;
     GumAddress moduleBase;
@@ -201,19 +242,32 @@ typedef struct {
     BOOL exhausted;
 } GXScanContext;
 
-static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user_data) {
+static gboolean GXScanMatch(GumAddress address, gsize size, gpointer user_data) {
     GXScanContext *ctx = (GXScanContext *)user_data;
-    if (!details || ctx->exhausted) return FALSE;
+    if (ctx->exhausted) return FALSE;
+    NSMutableArray *matches = (__bridge NSMutableArray *)ctx->matches;
+    [matches addObject:@{
+        @"address": [NSString stringWithFormat:@"0x%llx", (unsigned long long)address],
+        @"length": @(size),
+    }];
+    if (matches.count >= ctx->limit) { ctx->exhausted = YES; return FALSE; }
+    if (CFAbsoluteTimeGetCurrent() > ctx->deadline) { ctx->exhausted = YES; return FALSE; }
+    return TRUE;
+}
+
+static gboolean GXScanRange(const GumRangeDetails *details, gpointer user_data) {
+    GXScanContext *ctx = (GXScanContext *)user_data;
+    if (!details || !details->range || ctx->exhausted) return FALSE;
     if (CFAbsoluteTimeGetCurrent() > ctx->deadline) { ctx->exhausted = YES; return FALSE; }
 
     uint32_t protection = details->protection;
-    // 白名单式过滤：必须可读、跳过可执行段（代码段噪音大且更易出问题）、尺寸合理。
+    // 白名单式过滤：必须可读、跳过可执行段（代码段噪音大且更易出问题）。
     if (!(protection & GUM_PAGE_READ)) return TRUE;
     if (protection & GUM_PAGE_EXECUTE) return TRUE;
 
-    GumAddress base = details->range.base_address;
-    gsize size = details->range.size;
-    if (size == 0 || size > (gsize)2048 * 1024 * 1024) return TRUE;
+    GumAddress base = details->range->base_address;
+    gsize size = details->range->size;
+    if (size == 0 || size > GXMaxSingleRegion) return TRUE;
 
     if (ctx->hasModuleRange) {
         if (base + size <= ctx->moduleBase || base >= ctx->moduleEnd) return TRUE;
@@ -222,54 +276,15 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
             base = ctx->moduleBase;
         }
         if (base + size > ctx->moduleEnd) size = (gsize)(ctx->moduleEnd - base);
+        if (size == 0) return TRUE;
     }
-    if (size < (gsize)ctx->length) return TRUE;
+    if (ctx->scanned >= ctx->maxBytes) { ctx->exhausted = YES; return FALSE; }
 
-    // 整段确认可读，避免跨入 guard page 触发 SIGBUS。
-    if (!gum_memory_is_readable(GUM_ADDRESS(base), size)) return TRUE;
+    // 整段确认可读，避免扫到 guard page 触发 SIGBUS。
+    if (!gum_memory_is_readable((gconstpointer)(uintptr_t)base, size)) return TRUE;
 
-    const uint8_t *buffer = (const uint8_t *)(uintptr_t)base;
-    if (!buffer) return TRUE;
-
-    NSMutableArray *matches = (__bridge NSMutableArray *)ctx->matches;
-    const size_t patternLength = ctx->length;
-    const size_t anchor = ctx->anchor;
-    size_t cursor = 0;
-
-    while (cursor + patternLength <= size) {
-        if (ctx->scanned >= ctx->maxBytes) { ctx->exhausted = YES; return FALSE; }
-        if ((ctx->scanned & 0xFFFFF) == 0 && CFAbsoluteTimeGetCurrent() > ctx->deadline) {
-            ctx->exhausted = YES;
-            return FALSE;
-        }
-
-        const uint8_t *anchorHit = memchr(buffer + cursor + anchor, ctx->bytes[anchor],
-                                          size - (cursor + anchor));
-        if (!anchorHit) break;
-        size_t candidate = (size_t)(anchorHit - buffer) - anchor;
-        if (candidate + patternLength > size) break;
-
-        BOOL matched = YES;
-        for (size_t index = 0; index < patternLength; index++) {
-            if (ctx->mask[index] && buffer[candidate + index] != ctx->bytes[index]) {
-                matched = NO;
-                break;
-            }
-        }
-
-        if (matched) {
-            GumAddress hit = (GumAddress)(base + candidate);
-            [matches addObject:@{
-                @"address": [NSString stringWithFormat:@"0x%llx", (unsigned long long)hit],
-                @"offsetInRange": [NSString stringWithFormat:@"0x%zx", candidate],
-            }];
-            if (matches.count >= ctx->limit) { ctx->exhausted = YES; return FALSE; }
-            cursor = candidate + patternLength;
-        } else {
-            cursor = candidate + 1;
-        }
-        ctx->scanned += patternLength;
-    }
+    GumMemoryRange range = { base, size };
+    gum_memory_scan(&range, ctx->pattern, GXScanMatch, ctx);
 
     ctx->scanned += size;
     return TRUE;
@@ -308,8 +323,9 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
 + (NSString *)engineVersion {
 #ifndef GX_NO_GUM
     if (!GXEnsureEngine()) return nil;
-    const gchar *version = gum_version_string();
-    return version ? [NSString stringWithUTF8String:version] : nil;
+    // 17.x 的 devkit 不再导出 gum_version_string，版本由构建时拉取的 devkit 决定；
+    // 这里不做谎报，具体 tag 记录在 .github/workflows/build.yml 的运行日志里。
+    return @"embedded-devkit";
 #else
     return nil;
 #endif
@@ -338,21 +354,7 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
     BOOL onMain = [operation isEqualToString:@"backtrace"] || [operation isEqualToString:@"crash_log"];
     __weak typeof(self) weakSelf = self;
 
-    if (onMain) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSString *error = nil;
-            NSDictionary *result = nil;
-            @try {
-                result = [weakSelf run:operation arguments:wire error:&error];
-            } @catch (NSException *exception) {
-                error = [NSString stringWithFormat:@"Frida 引擎异常（%@: %@）", exception.name, exception.reason];
-            }
-            completion(result, error);
-        });
-        return;
-    }
-
-    dispatch_async(_queue, ^{
+    void (^work)(void) = ^{
         NSString *error = nil;
         NSDictionary *result = nil;
         @try {
@@ -361,7 +363,10 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
             error = [NSString stringWithFormat:@"Frida 引擎异常（%@: %@）", exception.name, exception.reason];
         }
         completion(result, error);
-    });
+    };
+
+    if (onMain) dispatch_async(dispatch_get_main_queue(), work);
+    else dispatch_async(_queue, work);
 }
 
 - (NSDictionary *)run:(NSString *)operation arguments:(NSDictionary *)arguments error:(NSString **)error {
@@ -425,7 +430,7 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
         } mutableCopy];
         if (dladdr((void *)address, &info)) {
             entry[@"image"] = GXBaseName(info.dli_fname);
-            if (info.dli_sname) {
+            if (info.dli_sname && info.dli_saddr) {
                 entry[@"symbol"] = [NSString stringWithUTF8String:info.dli_sname] ?: @"";
                 entry[@"offset"] = [NSString stringWithFormat:@"0x%lx",
                                     (unsigned long)(address - (uintptr_t)info.dli_saddr)];
@@ -501,22 +506,35 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
 
 #pragma mark - exports / imports
 
+- (GumModule *)loadModuleNamed:(NSString *)name error:(NSString **)error {
+    GError *glibError = NULL;
+    GumModule *module = gum_module_load(name.UTF8String, &glibError);
+    if (!module) {
+        NSString *reason = glibError ? [NSString stringWithUTF8String:glibError->message] : nil;
+        if (glibError) g_error_free(glibError);
+        *error = reason.length
+            ? [NSString stringWithFormat:@"加载模块失败：%@（%@）", name, reason]
+            : [NSString stringWithFormat:@"找不到模块：%@（用 modules 的 filter 确认准确名称）", name];
+        return NULL;
+    }
+    return module;
+}
+
 - (NSDictionary *)opExports:(NSDictionary *)arguments error:(NSString **)error {
     NSString *moduleName = GXStringArg(arguments, @"module");
     if (!moduleName.length) { *error = @"exports 需要 module 参数（模块名或完整路径）"; return nil; }
     NSString *query = GXStringArg(arguments, @"query");
     NSUInteger limit = GXIntArg(arguments, @"limit", GXDefaultLimit, 1, GXMaxLimit);
 
-    GumModule *module = gum_module_load(moduleName.UTF8String);
-    if (!module) {
-        *error = [NSString stringWithFormat:@"找不到模块：%@（用 modules 的 filter 确认准确名称）", moduleName];
-        return nil;
-    }
+    GumModule *module = [self loadModuleNamed:moduleName error:error];
+    if (!module) return nil;
 
     NSMutableArray *all = [NSMutableArray array];
     gum_module_enumerate_exports(module, GXCollectExport, (__bridge gpointer)all);
-    gsize moduleSize = 0;
-    GumAddress moduleBase = gum_module_get_range(module, &moduleSize);
+
+    const GumMemoryRange *range = gum_module_get_range(module);
+    GumAddress moduleBase = range ? range->base_address : 0;
+    gsize moduleSize = range ? range->size : 0;
     g_object_unref(module);
 
     NSMutableArray *filtered = [NSMutableArray array];
@@ -542,11 +560,8 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
     NSString *query = GXStringArg(arguments, @"query");
     NSUInteger limit = GXIntArg(arguments, @"limit", GXDefaultLimit, 1, GXMaxLimit);
 
-    GumModule *module = gum_module_load(moduleName.UTF8String);
-    if (!module) {
-        *error = [NSString stringWithFormat:@"找不到模块：%@（用 modules 的 filter 确认准确名称）", moduleName];
-        return nil;
-    }
+    GumModule *module = [self loadModuleNamed:moduleName error:error];
+    if (!module) return nil;
 
     NSMutableArray *all = [NSMutableArray array];
     gum_module_enumerate_imports(module, GXCollectImport, (__bridge gpointer)all);
@@ -596,7 +611,7 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
             result[@"imagePath"] = info.dli_fname ? [NSString stringWithUTF8String:info.dli_fname] : @"";
             result[@"imageOffset"] = [NSString stringWithFormat:@"0x%llx",
                                       (unsigned long long)(address - (uintptr_t)info.dli_fbase)];
-            if (info.dli_sname) {
+            if (info.dli_sname && info.dli_saddr) {
                 result[@"symbol"] = [NSString stringWithUTF8String:info.dli_sname] ?: @"";
                 result[@"symbolOffset"] = [NSString stringWithFormat:@"0x%llx",
                                            (unsigned long long)(address - (uintptr_t)info.dli_saddr)];
@@ -605,19 +620,30 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
             result[@"image"] = @"";
             result[@"note"] = @"该地址不在任何已加载镜像内，可能是堆/栈地址或未映射区域。";
         }
+
+        // 补一条 gum 视角的归属（dladdr 只认符号，gum 认整个模块范围）
+        GumModule *owner = gum_process_find_module_by_address((GumAddress)address);
+        if (owner) {
+            const GumMemoryRange *range = gum_module_get_range(owner);
+            result[@"gumModule"] = GXStringFromCString(gum_module_get_name(owner));
+            if (range) {
+                result[@"gumModuleBase"] = [NSString stringWithFormat:@"0x%llx",
+                                            (unsigned long long)range->base_address];
+            }
+            g_object_unref(owner);
+        }
         return result;
     }
 
     if (moduleName.length && symbolName.length) {
-        GumModule *module = gum_module_load(moduleName.UTF8String);
-        if (!module) {
-            *error = [NSString stringWithFormat:@"找不到模块：%@", moduleName];
-            return nil;
-        }
-        gpointer exported = gum_module_find_export_by_name(module, symbolName.UTF8String);
-        gpointer symbol = exported ?: gum_module_find_symbol_by_name(module, symbolName.UTF8String);
-        gsize moduleSize = 0;
-        GumAddress moduleBase = gum_module_get_range(module, &moduleSize);
+        GumModule *module = [self loadModuleNamed:moduleName error:error];
+        if (!module) return nil;
+
+        GumAddress exported = gum_module_find_export_by_name(module, symbolName.UTF8String);
+        GumAddress symbol = exported ? exported : gum_module_find_symbol_by_name(module, symbolName.UTF8String);
+
+        const GumMemoryRange *range = gum_module_get_range(module);
+        GumAddress moduleBase = range ? range->base_address : 0;
         g_object_unref(module);
 
         if (!symbol) {
@@ -626,9 +652,8 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
         }
         return @{@"module": moduleName,
                  @"name": symbolName,
-                 @"address": [NSString stringWithFormat:@"0x%llx", (unsigned long long)GUM_ADDRESS(symbol)],
-                 @"offset": [NSString stringWithFormat:@"0x%llx",
-                             (unsigned long long)(GUM_ADDRESS(symbol) - moduleBase)],
+                 @"address": [NSString stringWithFormat:@"0x%llx", (unsigned long long)symbol],
+                 @"offset": [NSString stringWithFormat:@"0x%llx", (unsigned long long)(symbol - moduleBase)],
                  @"moduleBase": [NSString stringWithFormat:@"0x%llx", (unsigned long long)moduleBase],
                  @"kind": exported ? @"export" : @"symbol"};
     }
@@ -676,7 +701,7 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
     ctx.limit = limit;
     ctx.total = 0;
 
-    gum_memory_enumerate_ranges((GumPageProtection)0, GXCollectRangeEntry, &ctx);
+    gum_process_enumerate_ranges((GumPageProtection)0, GXCollectRangeEntry, &ctx);
 
     return @{@"count": @(ranges.count),
              @"total": @(ctx.total),
@@ -707,18 +732,20 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
     NSUInteger readable = 0;
     while (readable < effective) {
         uint64_t cursor = address + readable;
-        if (!gum_memory_is_readable(GUM_ADDRESS(cursor), 1)) break;
+        gconstpointer pointer = (gconstpointer)(uintptr_t)cursor;
+        if (!gum_memory_is_readable(pointer, 1)) break;
         NSUInteger pageLeft = (NSUInteger)(4096 - (cursor & 0xFFF));
         NSUInteger chunk = MIN(effective - readable, pageLeft);
-        if (!gum_memory_is_readable(GUM_ADDRESS(cursor), (gsize)chunk)) chunk = 1;
+        if (!gum_memory_is_readable(pointer, (gsize)chunk)) chunk = 1;
         readable += chunk;
     }
 
     if (readable == 0) {
-        GumMemoryRange range = { GUM_ADDRESS(address), 1 };
-        GumPageProtection protection = gum_memory_query_protection(&range);
-        *error = [NSString stringWithFormat:@"地址 %@ 不可读（protection=%@）",
-                  addressText, GXProtectionString(protection)];
+        GumPageProtection protection = 0;
+        NSString *protectionText = gum_memory_query_protection((gconstpointer)(uintptr_t)address, &protection)
+            ? GXProtectionString(protection)
+            : @"unmapped";
+        *error = [NSString stringWithFormat:@"地址 %@ 不可读（protection=%@）", addressText, protectionText];
         return nil;
     }
 
@@ -792,56 +819,38 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
         return nil;
     }
 
+    // 先自己做一遍语法校验，再把合法 pattern 交给 gum：避免把畸形输入喂进解析器。
     NSMutableString *compact = [NSMutableString string];
     for (NSUInteger index = 0; index < patternText.length; index++) {
         unichar ch = [patternText characterAtIndex:index];
         if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '-') continue;
         [compact appendFormat:@"%C", ch];
     }
-    if (compact.length == 0 || (compact.length % 2) != 0) {
-        *error = @"pattern 长度必须是偶数（每字节两位十六进制）";
+    if (compact.length == 0 || (compact.length % 2) != 0 || compact.length > 1024) {
+        *error = @"pattern 长度必须是偶数（每字节两位十六进制），最多 512 字节";
         return nil;
     }
-    NSUInteger patternLength = compact.length / 2;
-    if (patternLength == 0 || patternLength > 512) {
-        *error = @"pattern 长度需在 1-512 字节之间";
-        return nil;
-    }
-
-    uint8_t *bytes = calloc(patternLength, 1);
-    uint8_t *mask = calloc(patternLength, 1);
-    if (!bytes || !mask) {
-        free(bytes); free(mask);
-        *error = @"pattern 解析内存分配失败";
-        return nil;
-    }
-
-    BOOL valid = YES;
-    size_t anchor = 0;
-    BOOL anchorFound = NO;
-    for (NSUInteger index = 0; index < patternLength; index++) {
-        unichar high = [compact characterAtIndex:index * 2];
-        unichar low = [compact characterAtIndex:index * 2 + 1];
-        if (high == '?' && low == '?') {
-            mask[index] = 0;
-            continue;
+    BOOL hasConcreteByte = NO;
+    for (NSUInteger index = 0; index < compact.length; index += 2) {
+        unichar high = [compact characterAtIndex:index];
+        unichar low = [compact characterAtIndex:index + 1];
+        if (high == '?' && low == '?') continue;
+        BOOL highValid = (high >= '0' && high <= '9') || (high >= 'a' && high <= 'f') || (high >= 'A' && high <= 'F');
+        BOOL lowValid = (low >= '0' && low <= '9') || (low >= 'a' && low <= 'f') || (low >= 'A' && low <= 'F');
+        if (!highValid || !lowValid) {
+            *error = @"pattern 含非法字符（只接受 0-9 a-f A-F 与 ?? 通配）";
+            return nil;
         }
-        int highValue = -1, lowValue = -1;
-        if (high >= '0' && high <= '9') highValue = high - '0';
-        else if (high >= 'a' && high <= 'f') highValue = high - 'a' + 10;
-        else if (high >= 'A' && high <= 'F') highValue = high - 'A' + 10;
-        if (low >= '0' && low <= '9') lowValue = low - '0';
-        else if (low >= 'a' && low <= 'f') lowValue = low - 'a' + 10;
-        else if (low >= 'A' && low <= 'F') lowValue = low - 'A' + 10;
-        if (highValue < 0 || lowValue < 0) { valid = NO; break; }
-        bytes[index] = (uint8_t)((highValue << 4) | lowValue);
-        mask[index] = 1;
-        if (!anchorFound) { anchor = index; anchorFound = YES; }
+        hasConcreteByte = YES;
+    }
+    if (!hasConcreteByte) {
+        *error = @"pattern 不能全是通配，至少需要一个确定字节";
+        return nil;
     }
 
-    if (!valid || !anchorFound) {
-        free(bytes); free(mask);
-        *error = @"pattern 含有非法字符，或全部为通配（至少需要一个确定字节）";
+    GumMatchPattern *pattern = gum_match_pattern_new_from_string(patternText.UTF8String);
+    if (!pattern) {
+        *error = @"gum 拒绝了该 pattern（请检查格式）";
         return nil;
     }
 
@@ -852,10 +861,7 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
     NSMutableArray *matches = [NSMutableArray array];
     GXScanContext ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.bytes = bytes;
-    ctx.mask = mask;
-    ctx.length = patternLength;
-    ctx.anchor = anchor;
+    ctx.pattern = pattern;
     ctx.matches = (__bridge void *)matches;
     ctx.limit = limit;
     ctx.maxBytes = maxBytes;
@@ -863,27 +869,24 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
 
     GumModule *module = nil;
     if (moduleName.length) {
-        module = gum_module_load(moduleName.UTF8String);
+        module = [self loadModuleNamed:moduleName error:error];
         if (!module) {
-            free(bytes); free(mask);
-            *error = [NSString stringWithFormat:@"找不到模块：%@", moduleName];
+            gum_match_pattern_unref(pattern);
             return nil;
         }
-        gsize moduleSize = 0;
-        GumAddress moduleBase = gum_module_get_range(module, &moduleSize);
-        ctx.hasModuleRange = YES;
-        ctx.moduleBase = moduleBase;
-        ctx.moduleEnd = moduleBase + moduleSize;
+        const GumMemoryRange *range = gum_module_get_range(module);
+        if (range) {
+            ctx.hasModuleRange = YES;
+            ctx.moduleBase = range->base_address;
+            ctx.moduleEnd = range->base_address + range->size;
+        }
     }
 
-    gum_memory_enumerate_ranges((GumPageProtection)0, GXCollectScanRange, &ctx);
+    gum_process_enumerate_ranges((GumPageProtection)0, GXScanRange, &ctx);
     if (module) g_object_unref(module);
-
-    free(bytes);
-    free(mask);
+    gum_match_pattern_unref(pattern);
 
     return @{@"pattern": patternText,
-             @"bytes": @(patternLength),
              @"module": moduleName ?: @"",
              @"scanned": @(ctx.scanned),
              @"budgetBytes": @(maxBytes),
@@ -891,7 +894,8 @@ static gboolean GXCollectScanRange(const GumRangeDetails *details, gpointer user
              @"truncated": @(ctx.exhausted),
              @"count": @(matches.count),
              @"matches": matches,
-             @"note": @"只扫描可读且不可执行的页，跳过代码段与不可读页；命中只给地址，看内容另用 read_mem。"};
+             @"note": @"只扫可读且不可执行的页，单段上限 64 MB、总预算 4 秒；命中只给地址与长度，"
+                      @"看内容另用 read_mem。"};
 }
 
 #endif // GX_NO_GUM
