@@ -117,6 +117,14 @@ jobs:
       - name: Build AiFlex3
         run: make clean package FINALPACKAGE=1 DEBUG=0 -j1
 
+      - name: Verify capstone6 linked
+        run: |
+          DYLIB=$(find . -type f -name 'FLEX++.dylib' | head -1)
+          test -n "$DYLIB" || { echo "dylib missing"; exit 1; }
+          echo "dylib: $DYLIB ($(stat -f%z "$DYLIB") bytes)"
+          echo "flx6 symbols via nm: $(nm -m "$DYLIB" 2>/dev/null | grep -c 'flx6_cs_' || true)"
+          echo "flx6 names in strings: $(strings "$DYLIB" 2>/dev/null | grep -c 'flx6_cs_' || true)"
+
       - name: List artifacts
         run: |
           ls -lh *.deb *.dylib

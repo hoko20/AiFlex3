@@ -68,10 +68,6 @@ $(LIBRARY_NAME)_FILES = $(shell find . \( -name '*.m' -o -name '*.mm' -o -name '
 #  Makefile 自动降级回 5.0.1（UCDisassembler 里的 #ifdef 分支不会引用前缀符号）。
 CAPSTONE_INCLUDE = -I./x/capstone/include
 CAPSTONE6_LIB = $(CURDIR)/x/capstone6/lib/libcapstone6.a
-ifneq ($(wildcard $(CAPSTONE6_LIB)),)
-$(LIBRARY_NAME)_CFLAGS += -DAIFLEX_USE_CAPSTONE6
-$(LIBRARY_NAME)_LDFLAGS += $(CAPSTONE6_LIB)
-endif
 
 # 必要的框架和库
 $(LIBRARY_NAME)_FRAMEWORKS = Foundation UIKit CoreGraphics CoreFoundation Security Network
@@ -127,6 +123,15 @@ $(LIBRARY_NAME)_CFLAGS += -I$(FRIDA_VENDOR) -DGUM_STATIC
 $(LIBRARY_NAME)_LDFLAGS += $(FRIDA_VENDOR)/libfrida-gum.a -lc++ -liconv
 else
 $(LIBRARY_NAME)_CFLAGS += -DGX_NO_GUM=1
+endif
+
+# 必须放在所有 *_CFLAGS = 赋值之后：Makefile 中段有一处 `*_CFLAGS = ...`
+# 是纯赋值，若在这之前 += 会被整段覆盖，导致 UCDisassembler 仍走 5.0.1
+# 分支、libcapstone6.a 进了链接命令却没有任何符号引用它（体积白涨）。
+ifneq ($(wildcard $(CAPSTONE6_LIB)),)
+$(LIBRARY_NAME)_CFLAGS += -DAIFLEX_USE_CAPSTONE6
+$(LIBRARY_NAME)_LDFLAGS += $(CAPSTONE6_LIB)
+$(info [AiFlex3] capstone6 enabled: $(CAPSTONE6_LIB))
 endif
 
 include $(THEOS)/makefiles/common.mk
