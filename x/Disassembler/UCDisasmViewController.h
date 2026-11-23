@@ -5,7 +5,10 @@
 NS_ASSUME_NONNULL_BEGIN
 
 typedef NS_ENUM(NSInteger, UCDisasmViewMode) {
+    /// CFG 基本块图。默认视图。
     UCDisasmViewModeGraph = 0,
+    /// 线性汇编列表：地址 / 机器码 / 助记符 / 注释。
+    UCDisasmViewModeListing = 1,
 };
 
 @interface UCDisasmViewController : UIViewController

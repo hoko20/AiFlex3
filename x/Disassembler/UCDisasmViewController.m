@@ -1,5 +1,4 @@
 #import "UCDisasmViewController.h"
-#import "UCPseudocodeViewController.h"
 #import "FLEXColor.h"
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
@@ -10,7 +9,6 @@
 @interface UCDisasmViewController () <UIScrollViewDelegate>
 
 @property (nonatomic, strong) UIActivityIndicatorView *loadingIndicator;
-@property (nonatomic, strong) UILabel *statusLabel;
 
 @property (nonatomic, strong) UCDisasmResult *disasmResult;
 
@@ -18,7 +16,13 @@
 @property (nonatomic, assign) NSUInteger codeSize;
 @property (nonatomic, copy) NSString *navTitle;
 
-@property (nonatomic, strong) UILabel *modeLabel;
+/// 视图切换控件。索引与 UCDisasmViewMode 一一对应。
+@property (nonatomic, strong) UISegmentedControl *modeControl;
+
+/// 汇编列表模式。
+@property (nonatomic, strong) UITextView *listingTextView;
+
+/// CFG 图形模式。
 @property (nonatomic, strong) UIScrollView *graphScrollView;
 @property (nonatomic, strong) UCCFGView *cfgView;
 @property (nonatomic, strong) UIView *graphStatusBar;
@@ -98,7 +102,9 @@
     [self setupNavigationBar];
     [self setupViewModeControl];
     [self setupGraphView];
+    [self setupListingView];
     [self setupLoadingIndicator];
+    [self applyViewMode:self.viewMode];
 
     [self loadDisassembly];
 }
@@ -111,15 +117,17 @@
     CGFloat width = self.view.bounds.size.width;
 
     CGFloat labelH = 32;
-    self.modeLabel.frame = CGRectMake(10, top + 5, width - 20, labelH);
+    self.modeControl.frame = CGRectMake(10, top + 4, width - 20, labelH);
 
-    CGFloat graphY = top + labelH + 10;
+    CGFloat graphY = top + labelH + 8;
     CGFloat statusBarH = 32;
     CGFloat graphH = self.view.bounds.size.height - graphY - bottom;
 
-    self.graphStatusBar.hidden = NO;
+    // 显隐由 applyViewMode 决定，这里只排位置，不要覆盖 hidden ——
+    // 之前写死 hidden = NO 会让切到汇编列表时底部缩放条浮在文字上。
     self.graphStatusBar.frame = CGRectMake(0, self.view.bounds.size.height - bottom - statusBarH, width, statusBarH);
     self.graphScrollView.frame = CGRectMake(0, graphY, width, graphH - statusBarH);
+    self.listingTextView.frame = CGRectMake(0, graphY, width, graphH);
 
     CGFloat btnW = 44;
     CGFloat btnH = statusBarH;
@@ -147,12 +155,76 @@
 }
 
 - (void)setupViewModeControl {
-    self.modeLabel = [[UILabel alloc] init];
-    self.modeLabel.text = @"CFG图形";
-    self.modeLabel.textAlignment = NSTextAlignmentCenter;
-    self.modeLabel.font = [UIFont boldSystemFontOfSize:13];
-    self.modeLabel.textColor = FLEXColor.tintColor;
-    [self.view addSubview:self.modeLabel];
+    // 原来是写死 "CFG图形" 的 UILabel —— 没有任何可交互控件，
+    // 也就是说"视图模式"这个概念在界面上从来不存在。
+    // 这里换成真的分段控件，索引直接对应 UCDisasmViewMode。
+    self.modeControl = [[UISegmentedControl alloc] initWithItems:@[@"CFG 图形", @"汇编"]];
+    self.modeControl.selectedSegmentIndex = (NSInteger)self.viewMode;
+    self.modeControl.tintColor = FLEXColor.tintColor;
+    if (@available(iOS 13.0, *)) {
+        self.modeControl.selectedSegmentTintColor = FLEXColor.tintColor;
+    }
+    [self.modeControl addTarget:self
+                         action:@selector(modeChanged:)
+               forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:self.modeControl];
+}
+
+- (void)modeChanged:(UISegmentedControl *)sender {
+    [self applyViewMode:(UCDisasmViewMode)sender.selectedSegmentIndex];
+}
+
+- (void)applyViewMode:(UCDisasmViewMode)mode {
+    _viewMode = mode;
+
+    BOOL listing = (mode == UCDisasmViewModeListing);
+    self.listingTextView.hidden = !listing;
+    self.graphScrollView.hidden = listing;
+    self.graphStatusBar.hidden = listing;
+
+    if (listing) {
+        [self refreshListing];
+    } else if (self.currentFunction) {
+        // 切回图形时重新适配缩放：列表模式下视图尺寸变过，
+        // 之前算出来的 zoomScale 会错位。
+        [self updateCFGView];
+    }
+
+    // 让分段控件跟上：外部改 viewMode 时界面不能停在旧状态。
+    if (self.modeControl.selectedSegmentIndex != (NSInteger)mode) {
+        self.modeControl.selectedSegmentIndex = (NSInteger)mode;
+    }
+
+    [self.view setNeedsLayout];
+}
+
+/// 让 viewMode 变成真正可用的入口：外部设置时同步界面。
+- (void)setViewMode:(UCDisasmViewMode)viewMode {
+    if (_viewMode == viewMode) return;
+    [self applyViewMode:viewMode];
+}
+
+- (void)setupListingView {
+    self.listingTextView = [[UITextView alloc] initWithFrame:CGRectZero];
+    self.listingTextView.editable = NO;
+    self.listingTextView.selectable = YES;
+    self.listingTextView.alwaysBounceVertical = YES;
+    self.listingTextView.textContainerInset = UIEdgeInsetsMake(8, 8, 24, 8);
+    self.listingTextView.backgroundColor = [UIColor colorWithRed:0.96 green:0.96 blue:0.98 alpha:1.0];
+    self.listingTextView.textColor = [UIColor colorWithRed:0.16 green:0.16 blue:0.20 alpha:1.0];
+
+    UIFont *mono = [UIFont fontWithName:@"Menlo-Regular" size:11];
+    if (!mono) {
+        if (@available(iOS 13.0, *)) {
+            mono = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+        } else {
+            mono = [UIFont fontWithName:@"Courier" size:11];
+        }
+    }
+    self.listingTextView.font = mono;
+    self.listingTextView.text = @"反汇编加载中...";
+    self.listingTextView.hidden = YES;
+    [self.view addSubview:self.listingTextView];
 }
 
 - (void)setupGraphView {
@@ -291,11 +363,23 @@
             strongSelf.disasmResult = result;
             strongSelf.currentFunction = function;
             [strongSelf.loadingIndicator stopAnimating];
-            
+
             if (function) {
                 strongSelf.navTitle = function.name;
                 strongSelf.title = function.name;
                 [strongSelf updateCFGView];
+                [strongSelf refreshListing];
+            } else {
+                // 认不出函数边界就没有 CFG 可画。原来这里什么都不做，
+                // 用户看到的是一片空白，只有一个写死的 "CFG图形" 标签。
+                // 现在退回汇编列表：至少能读出这片字节到底是什么。
+                NSString *reason = result ? @"未能识别函数边界，已退回汇编列表" : @"该地址无法反汇编";
+                strongSelf.modeControl.selectedSegmentIndex = UCDisasmViewModeListing;
+                [strongSelf applyViewMode:UCDisasmViewModeListing];   // 内部会 refreshListing
+                strongSelf.listingTextView.text =
+                    [NSString stringWithFormat:@"%@\n\n起始地址 0x%llx   读取长度 %lu bytes\n\n--------\n\n%@",
+                     reason, startAddr, (unsigned long)codeSz,
+                     [strongSelf listingText]];
             }
         });
     });
@@ -345,6 +429,81 @@
     [self.view setNeedsLayout];
 }
 
+#pragma mark - 汇编列表
+
+/// 把指令流渲染成等宽文本。
+/// 只读 disasmResult / currentFunction 上已经算好的字段，不额外调 dladdr ——
+/// 一个 8 KiB 函数有上千条指令，逐条查符号会让切换视图肉眼可见地卡。
+- (NSString *)listingText {
+    NSArray<UCDisasmInstruction *> *instructions = self.disasmResult.instructions;
+    if (instructions.count == 0) {
+        instructions = self.currentFunction.instructions;
+    }
+    if (instructions.count == 0) {
+        return @"没有可显示的指令。\n\n可能原因：地址不可读、未按 4 字节对齐，或该地址落在数据段而不是代码段。";
+    }
+
+    NSMutableString *text = [NSMutableString stringWithCapacity:instructions.count * 80];
+
+    UCFunction *function = self.currentFunction;
+    if (function) {
+        [text appendFormat:@"// %@\n", function.name.length ? function.name : @"<unknown>"];
+        [text appendFormat:@"// 0x%llx - 0x%llx   %lu bytes   %lu blocks   %lu instr\n\n",
+         function.startAddress, function.endAddress,
+         (unsigned long)function.size,
+         (unsigned long)function.basicBlockCount,
+         (unsigned long)instructions.count];
+    }
+
+    UCDisasmInstruction *first = instructions.firstObject;
+    for (UCDisasmInstruction *instruction in instructions) {
+        if (instruction.isFunctionStart && instruction.functionName.length) {
+            [text appendFormat:@"\n; ---- %@ ----\n", instruction.functionName];
+        } else if (instruction.isBasicBlockStart && instruction != first) {
+            [text appendString:@"\n"];
+        }
+
+        // 机器码列补齐到 12 字符（4 字节指令是 11 字符）。
+        // 不能直接 stringByPaddingToLength: —— 它对超长串会截断，
+        // 8 字节指令的机器码会被砍掉一半。
+        NSMutableString *padded = [(instruction.bytesHex ?: @"") mutableCopy];
+        while (padded.length < 12) {
+            [padded appendString:@" "];
+        }
+
+        if (!instruction.isValid) {
+            [text appendFormat:@"%012llx  %@<无法解码>\n", instruction.address, padded];
+            continue;
+        }
+
+        [text appendFormat:@"%012llx  %@%@\n",
+         instruction.address, padded, instruction.fullText ?: @""];
+
+        // 注释单独缩进成一行：符号名很长时不会把机器码列挤歪。
+        NSMutableArray<NSString *> *notes = [NSMutableArray array];
+        if (instruction.isBranch && instruction.branchTarget != 0) {
+            [notes addObject:[NSString stringWithFormat:@"-> 0x%llx", instruction.branchTarget]];
+        }
+        if (instruction.comment.length) {
+            [notes addObject:instruction.comment];
+        }
+        if (instruction.xrefComment.length) {
+            [notes addObject:instruction.xrefComment];
+        }
+        for (NSString *note in notes) {
+            [text appendFormat:@"              ; %@\n", note];
+        }
+    }
+
+    return text;
+}
+
+- (void)refreshListing {
+    if (!self.listingTextView) return;
+    self.listingTextView.text = [self listingText];
+    [self.listingTextView setContentOffset:CGPointZero animated:NO];
+}
+
 - (void)handleBasicBlockTap:(UCBasicBlock *)block {
     if (!block) return;
     UIView *blockView = self.cfgView.blockViewMap[@(block.blockId)];
@@ -376,11 +535,33 @@
 }
 
 - (void)moreAction {
+    // 原来这个菜单只有「取消」一个选项 —— 点了等于什么也没做。
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"选项"
                                                                     message:nil
                                                              preferredStyle:UIAlertControllerStyleActionSheet];
 
     __weak typeof(self) weakSelf = self;
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"复制反汇编文本"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf copyText:[strongSelf listingText] label:@"反汇编文本"];
+    }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"复制函数摘要"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf copyText:[strongSelf functionSummary] label:@"函数摘要"];
+    }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"导出 .asm 到沙盒"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf exportListingToSandbox];
+    }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"取消"
                                               style:UIAlertActionStyleCancel
@@ -388,6 +569,122 @@
 
     alert.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - 导出与复制
+
+- (NSString *)functionSummary {
+    UCFunction *function = self.currentFunction;
+    if (!function) {
+        return [NSString stringWithFormat:
+                @"起始地址: 0x%llx\n读取长度: %lu bytes\n指令数: %lu\n引擎: %@",
+                self.startAddress,
+                (unsigned long)self.codeSize,
+                (unsigned long)self.disasmResult.instructions.count,
+                self.disasmResult.engineName ?: @"unknown"];
+    }
+
+    return [NSString stringWithFormat:
+            @"函数: %@\n起始: 0x%llx\n结束: 0x%llx\n大小: %lu bytes\n"
+            @"基本块: %lu\n指令: %lu\n被调用: %lu 处\n调用出: %lu 处\n引擎: %@",
+            function.name.length ? function.name : @"<unknown>",
+            function.startAddress,
+            function.endAddress,
+            (unsigned long)function.size,
+            (unsigned long)function.basicBlockCount,
+            (unsigned long)function.instructions.count,
+            (unsigned long)function.calledFrom.count,
+            (unsigned long)function.callSites.count,
+            self.disasmResult.engineName ?: @"unknown"];
+}
+
+- (void)copyText:(NSString *)text label:(NSString *)label {
+    if (!text.length) {
+        [self showToast:@"没有可复制的内容"];
+        return;
+    }
+    [UIPasteboard generalPasteboard].string = text;
+    [self showToast:[NSString stringWithFormat:@"%@ 已复制\n%lu 字符",
+                     label, (unsigned long)text.length]];
+}
+
+- (NSString *)sanitizedFileName:(NSString *)name {
+    NSCharacterSet *illegal = [NSCharacterSet characterSetWithCharactersInString:@"/\\:?%*|\"<> \n\t"];
+    NSString *clean = [[name componentsSeparatedByCharactersInSet:illegal] componentsJoinedByString:@"_"];
+    if (clean.length > 80) {
+        clean = [clean substringToIndex:80];
+    }
+    return clean.length ? clean : @"disasm";
+}
+
+- (void)exportListingToSandbox {
+    NSString *text = [self listingText];
+    if (!text.length) {
+        [self showToast:@"没有可导出的内容"];
+        return;
+    }
+
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (!documents.length) {
+        [self showToast:@"找不到沙盒 Documents 目录"];
+        return;
+    }
+
+    NSString *directory = [documents stringByAppendingPathComponent:@"AiFlex3Disasm"];
+    NSError *directoryError = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtPath:directory
+                                 withIntermediateDirectories:YES
+                                                  attributes:nil
+                                                       error:&directoryError]) {
+        [self showToast:[NSString stringWithFormat:@"创建目录失败\n%@",
+                         directoryError.localizedDescription ?: @"unknown"]];
+        return;
+    }
+
+    uint64_t base = self.currentFunction ? self.currentFunction.startAddress : self.startAddress;
+    NSString *baseName = [self sanitizedFileName:self.currentFunction.name ?: @"sub"];
+    NSString *fileName = [NSString stringWithFormat:@"%@_%llx.asm", baseName, base];
+    NSString *path = [directory stringByAppendingPathComponent:fileName];
+
+    NSISO8601DateFormatter *formatter = [[NSISO8601DateFormatter alloc] init];
+    NSString *header = [NSString stringWithFormat:
+                        @"; AiFlex3 disassembly export\n; %@\n; %@\n\n",
+                        [self functionSummary],
+                        [formatter stringFromDate:[NSDate date]]];
+
+    NSError *writeError = nil;
+    if (![[header stringByAppendingString:text] writeToFile:path
+                                                atomically:YES
+                                                  encoding:NSUTF8StringEncoding
+                                                     error:&writeError]) {
+        [self showToast:[NSString stringWithFormat:@"写入失败\n%@",
+                         writeError.localizedDescription ?: @"unknown"]];
+        return;
+    }
+
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
+    unsigned long long size = [attributes[NSFileSize] unsignedLongLongValue];
+    [self showToast:[NSString stringWithFormat:@"已导出 %@\n%llu 字节\n\nDocuments/AiFlex3Disasm/",
+                     fileName, size]];
+}
+
+- (void)showToast:(NSString *)message {
+    // ActionSheet 的 handler 执行时它自身还在 dismiss 动画里，直接 present 会
+    // 撞上 "already presenting"。推迟一帧到动画结束再弹。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!self.presentedViewController && self.view.window) {
+            UIAlertController *toast = [UIAlertController alertControllerWithTitle:nil
+                                                                          message:message
+                                                                   preferredStyle:UIAlertControllerStyleAlert];
+            [self presentViewController:toast animated:YES completion:^{
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    [toast dismissViewControllerAnimated:YES completion:nil];
+                });
+            }];
+        }
+    });
 }
 
 @end

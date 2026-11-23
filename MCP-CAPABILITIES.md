@@ -89,7 +89,7 @@
 | Lookin / Reveal 式 | `FLEXLookinInspector`、`FLEXRevealLikeInspector`、`FHS*` 快照、`RTB*` 运行时浏览 |
 | `x/Decrypt` | 抓包解密：fishhook 打 `SSL_get_psk_identity`、OpenSSL `EVP_*`/`AES_*`、`CFNetworkCopySystemProxySettings`、脚本解码 |
 | `x/ClassDump` | 类头文件导出（含 Swift dumper + zip） |
-| `x/Disassembler` | capstone AArch64 反汇编 + 伪代码页 |
+| `x/Disassembler` | capstone 5.0.1 AArch64 反汇编 + CFG 图形 / 汇编列表双视图（无伪代码生成器） |
 | `x/AppProtection` | App 保护绕过检测 |
 | `x/filza` | 文件管理入口 |
 
@@ -496,8 +496,8 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 12. 版本
 
-- 文档版本：2026-11-23（AiFlex3 3.3.0）
-- 插件：`com.hoko20.aiflex3` 3.3.0，产物 `FLEX++-3.3.0-arm64-rootless.dylib` / `com.hoko20.aiflex3_3.3.0_iphoneos-arm64.deb`
+- 文档版本：2026-11-23（AiFlex3 3.3.1）
+- 插件：`com.hoko20.aiflex3` 3.3.1，产物 `FLEX++-3.3.1-arm64-rootless.dylib` / `com.hoko20.aiflex3_3.3.1_iphoneos-arm64.deb`
 - 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息、原生层只读观测（模块/符号/内存/线程/调用栈/崩溃）、AArch64 反汇编与 CFG、符号双向解析、交叉引用、ObjC 方法体反汇编、加密镜像明文导出、**inline hook 与字节补丁（含参数抓取、逐条还原、端到端自检）**
 - 仓库：https://github.com/hoko20/AiFlex3
 - 自动构建：GitHub Actions `Build AiFlex3`，push 到 `main` 触发，产物以 artifact 形式提供
@@ -708,6 +708,26 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 16. 变更记录
 
+### 3.3.1（2026-11-23）—— 清理反汇编界面的三处半成品
+
+`x/Disassembler` 的引擎（`UCDisassembler.m`，973 行）一直是完整的，UI 层却停在骨架阶段。这一版把三处补齐：
+
+| 对象 | 原来 | 现在 |
+|---|---|---|
+| `UCPseudocodeViewController` | 85 行展示容器，只被 import、从未实例化（`initWithPseudocode:` 零调用） | **删除**，连同 `UCDisasmViewController.m` 里那行 import |
+| `setupViewModeControl` | 一个 `UILabel`，文本写死 `@"CFG图形"`，没有任何切换控件 | 真的 `UISegmentedControl`：「CFG 图形 / 汇编」，索引直接对应 `UCDisasmViewMode` |
+| `moreAction` | ActionSheet 里只有「取消」一项，点击等于什么也没做 | 复制反汇编文本 / 复制函数摘要 / 导出 `.asm` 到 `Documents/AiFlex3Disasm/` |
+
+顺带修的：
+
+- 新增**线性汇编列表**视图（`UITextView`，Menlo 11pt）：地址 / 机器码 / 助记符 / 注释，基本块之间空行分隔，函数头给出起止地址与统计。
+- `viewDidLayoutSubviews` 里原来写死 `graphStatusBar.hidden = NO`，会让底部缩放条浮在列表文字上；改为只排位置、显隐交给 `applyViewMode:`。
+- `UCDisasmViewMode` 枚举原来只有 `UCDisasmViewModeGraph = 0` 一项；补 `UCDisasmViewModeListing = 1`，`viewMode` 属性也从「声明了没人用」变成真的可外部设置（`setViewMode:` 会同步分段控件）。
+- `analyzeFunctionAtAddress:` 失败时原来什么都不显示（用户看到一片空白）；现在自动落到汇编列表，并在开头说明「未能识别函数边界」，下面照样列出这段字节。
+- 删掉从未使用过的 `statusLabel` 属性。
+
+汇编导出的文件头带函数摘要与 ISO8601 时间戳，正文是同一份列表，`; ` 注释风格，可直接用编辑器或反汇编器打开对照。
+
 ### 3.3.0（2026-11-23）—— 新增 `aiflex_hook`（代码改写）+ 面板补全工具清单
 
 **新增**
@@ -729,7 +749,7 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 **为什么这次能加、上一次没加**
 
-反汇编引擎一直在仓库里，只是没有 MCP 入口；`UCPseudocodeViewController` 只有一个纯展示的字符串容器，全仓库没有伪代码生成器，所以「反汇编 ↔ 伪代码」这条链路此前是断的。本次只接反汇编与 CFG，不伪造伪代码——见 §19.5。
+反汇编引擎一直在仓库里，只是没有 MCP 入口；同目录的 `UCPseudocodeViewController` 只是个收字符串的展示容器（85 行，从未被实例化，3.3.1 已删除），全仓库没有伪代码生成器，所以「反汇编 ↔ 伪代码」这条链路此前是断的。本次只接反汇编与 CFG，不伪造伪代码——见 §19.5。
 
 **输入规模硬上限（都是刻意的）**
 
@@ -1043,7 +1063,7 @@ aiflex_disasm(operation=scan_functions, address="<base>", size=65536)
 
 ### 19.5 为什么没有伪代码
 
-`UCPseudocodeViewController` 是一个 66 行的纯展示容器：`initWithPseudocode:title:` 接收一个已经拼好的字符串，**全仓库没有任何调用方，也没有生成器**。也就是说「汇编 → 类 C」这条链路在代码层面根本不存在，不是被关掉了。
+`UCPseudocodeViewController` 曾是 `x/Disassembler` 里的一个 85 行展示容器：`initWithPseudocode:title:` 接收一个已经拼好的字符串，只被 `UCDisasmViewController.m` 引入过头文件、**从未被实例化，也不存在任何生成器**。也就是说「汇编 → 类 C」这条链路在代码层面根本不存在，不是被关掉的。3.3.1 已把该文件与那行 import 一并删除。
 
 手写 ARM64 → C 的还原器，质量天花板极低（栈变量识别、类型推断、struct 恢复都做不好），而 iOS 上 IDA / Ghidra / Hopper 免费且成熟。手机端的正确定位是**取证现场**，不是**逆向工作台**：现场把地址、调用关系、CFG、字符串、符号取全，二进制用 §20 导出去，桌面上慢慢看。
 

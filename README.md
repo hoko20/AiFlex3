@@ -4,9 +4,9 @@
 
 ```
 包标识   com.hoko20.aiflex3
-版本     3.3.0
-产物     FLEX++-3.3.0-arm64-rootless.dylib
-        com.hoko20.aiflex3_3.3.0_iphoneos-arm64.deb
+版本     3.3.1
+产物     FLEX++-3.3.1-arm64-rootless.dylib
+        com.hoko20.aiflex3_3.3.1_iphoneos-arm64.deb
 目标     iOS 15.0+ / arm64 / 越狱（rootless，安装到 /var/jb）
 构建     Theos library，ldid 假签名
 ```
@@ -21,7 +21,7 @@
 |---|---|
 | `x/Decrypt` | 运行时抓明文：fishhook 打 `SSL_get_psk_identity`、OpenSSL `EVP_*` / `AES_*`、CommonCrypto 与哈希入口、`NSURLResponse` 回调，落 SQLite |
 | `x/ClassDump` | 运行时类导出，含 Swift dumper 与打包 |
-| `x/Disassembler` | capstone 5.0.1 AArch64 反汇编、函数边界识别、基本块 CFG、交叉引用、符号化（**无伪代码生成器**） |
+| `x/Disassembler` | capstone 5.0.1 AArch64 反汇编、函数边界识别、基本块 CFG、交叉引用、符号化；界面支持**汇编列表 / CFG 图形**双视图切换与 `.asm` 导出（**无伪代码生成器**） |
 | `x/AppProtection` | 给调试面板自己上锁（`LAContext` 人脸/密码 + 时间码 + 计算器伪装），防止别人拿到手机就能翻数据 |
 | `x/filza` | 文件管理入口，含 Mach-O load commands 查看 |
 
@@ -41,9 +41,9 @@
 
 ```bash
 # 已构建的 deb
-dpkg -i com.hoko20.aiflex3_3.3.0_iphoneos-arm64.deb
+dpkg -i com.hoko20.aiflex3_3.3.1_iphoneos-arm64.deb
 # 或直接把 dylib 放进
-/var/jb/Library/MobileSubstrate/DynamicLibraries/FLEX++-3.3.0-arm64-rootless.dylib
+/var/jb/Library/MobileSubstrate/DynamicLibraries/FLEX++-3.3.1-arm64-rootless.dylib
 ```
 
 装完**重启目标 App**（不是重启桌面），FLEX 悬浮工具条上会出现 **AiFlex3** 按钮，点进去是控制面板。
@@ -55,7 +55,7 @@ dpkg -i com.hoko20.aiflex3_3.3.0_iphoneos-arm64.deb
 ```bash
 export THEOS=/opt/theos
 make clean package FINALPACKAGE=1 DEBUG=0 -j1
-# 产物：FLEX++-3.3.0-arm64-rootless.dylib + com.hoko20.aiflex3_3.3.0_iphoneos-arm64.deb
+# 产物：FLEX++-3.3.1-arm64-rootless.dylib + com.hoko20.aiflex3_3.3.1_iphoneos-arm64.deb
 ```
 
 CI：`.github/workflows/build.yml`，push 到 `main` 自动在 `macos-latest` 上构建并上传 artifact `AiFlex3`。注意该 workflow 只拉取 Theos 的 `vendor/include`、`vendor/lib` 两个子模块（`vendor/orion` 已私有，不能全量 init）。
