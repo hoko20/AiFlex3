@@ -113,7 +113,7 @@ static BOOL uc_safe_read_memory(uint64_t address, void *buffer, size_t size) {
 - (void)initCapstone {
     if (g_capstoneInitialized) return;
     
-    cs_err err = cs_open(CS_ARCH_AARCH64, CS_MODE_ARM | CS_MODE_LITTLE_ENDIAN, &g_capstoneHandle);
+    cs_err err = cs_open(CS_ARCH_ARM64, CS_MODE_ARM | CS_MODE_LITTLE_ENDIAN, &g_capstoneHandle);
     if (err != CS_ERR_OK) {
         NSLog(@"[UCDisassembler] cs_open failed: %s", cs_strerror(err));
         return;
