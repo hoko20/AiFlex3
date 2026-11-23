@@ -18,6 +18,7 @@
 #import "FLEXAiFlexFrida.h"
 
 #import <dlfcn.h>
+#import <objc/runtime.h>
 #import <mach/mach_time.h>
 #import <string.h>
 #import <stdlib.h>
@@ -678,7 +679,7 @@ static NSString *HXValidateExecutableTarget(uint64_t address, size_t needBytes) 
         row[@"image"] = record[@"image"];
         row[@"imageOffset"] = record[@"imageOffset"];
         row[@"recordArgs"] = record[@"recordArgs"];
-        HXHookSlot *slot = (HXHookSlot *)record[@"slot"].pointerValue;
+        HXHookSlot *slot = (HXHookSlot *)((NSValue *)record[@"slot"]).pointerValue;
         row[@"calls"] = @(slot ? (uint64_t)__atomic_load_n(&slot->calls, __ATOMIC_RELAXED) : 0);
         [hooks addObject:row];
     }
@@ -846,8 +847,8 @@ static NSString *HXValidateExecutableTarget(uint64_t address, size_t needBytes) 
     NSMutableArray *detached = [NSMutableArray array];
     for (NSNumber *key in targets) {
         NSMutableDictionary *record = _hooks[key];
-        GumInvocationListener *listener = (GumInvocationListener *)record[@"listener"].pointerValue;
-        HXHookSlot *slot = (HXHookSlot *)record[@"slot"].pointerValue;
+        GumInvocationListener *listener = (GumInvocationListener *)((NSValue *)record[@"listener"]).pointerValue;
+        HXHookSlot *slot = (HXHookSlot *)((NSValue *)record[@"slot"]).pointerValue;
         if (listener) {
             gum_interceptor_detach(interceptor, listener);
             g_object_unref(listener);
@@ -942,7 +943,7 @@ static NSString *HXValidateExecutableTarget(uint64_t address, size_t needBytes) 
     BOOL alsoResetCounters = HXBoolArg(arguments, @"reset_counters", NO);
     if (alsoResetCounters) {
         for (NSDictionary *record in _hooks.allValues) {
-            HXHookSlot *slot = (HXHookSlot *)record[@"slot"].pointerValue;
+            HXHookSlot *slot = (HXHookSlot *)((NSValue *)record[@"slot"]).pointerValue;
             if (slot) __atomic_store_n(&slot->calls, 0, __ATOMIC_RELAXED);
         }
     }
@@ -1177,7 +1178,7 @@ static NSString *HXValidateExecutableTarget(uint64_t address, size_t needBytes) 
         if ([name isEqual:@"list"] || [name isEqual:@"status"]) {
             for (NSNumber *key in self->_hooks.allKeys) {
                 NSMutableDictionary *record = self->_hooks[key];
-                HXHookSlot *slot = (HXHookSlot *)record[@"slot"].pointerValue;
+                HXHookSlot *slot = (HXHookSlot *)((NSValue *)record[@"slot"]).pointerValue;
                 if (slot) record[@"calls"] = @((uint64_t)__atomic_load_n(&slot->calls, __ATOMIC_RELAXED));
             }
         }
@@ -1194,7 +1195,7 @@ static NSString *HXValidateExecutableTarget(uint64_t address, size_t needBytes) 
         GumInterceptor *interceptor = gum_interceptor_obtain();
         for (NSNumber *key in self->_hooks.allKeys) {
             NSDictionary *record = self->_hooks[key];
-            GumInvocationListener *listener = (GumInvocationListener *)record[@"listener"].pointerValue;
+            GumInvocationListener *listener = (GumInvocationListener *)((NSValue *)record[@"listener"]).pointerValue;
             if (listener) {
                 gum_interceptor_detach(interceptor, listener);
                 g_object_unref(listener);
