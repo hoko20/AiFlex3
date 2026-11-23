@@ -4,9 +4,9 @@
 
 ```
 包标识   com.hoko20.aiflex3
-版本     3.0.0
-产物     FLEX++-3.0.0-arm64-rootless.dylib
-        com.hoko20.aiflex3_3.0.0_iphoneos-arm64.deb
+版本     3.1.0
+产物     FLEX++-3.1.0-arm64-rootless.dylib
+        com.hoko20.aiflex3_3.1.0_iphoneos-arm64.deb
 目标     iOS 15.0+ / arm64 / 越狱（rootless，安装到 /var/jb）
 构建     Theos library，ldid 假签名
 ```
@@ -25,7 +25,9 @@
 | `x/AppProtection` | App 保护绕过检测 |
 | `x/filza` | 文件管理入口 |
 
-**MCP operation 层**：40+ 个 operation 归一到一个分发点，覆盖 observe / control / sensitive / script / trace 五组，详细契约见 [`MCP-CAPABILITIES.md`](MCP-CAPABILITIES.md)。
+**MCP operation 层**：73 个 operation 归一到一个分发点，覆盖 observe / control / sensitive / script / trace / frida 六组，详细契约见 [`MCP-CAPABILITIES.md`](MCP-CAPABILITIES.md)。
+
+**原生层只读观测（`aiflex_frida`，基于 frida-gum）**：模块与符号枚举（`modules` / `exports` / `imports`）、地址与符号互查（`resolve`）、线程列表（`threads`）、主线程符号化调用栈（`backtrace`）、映射区间（`memory_ranges`）、分页校验的内存读（`read_mem`，hex/utf8/u32/u64/ptr）、特征码扫描（`scan`，`??` 通配、4 秒预算）、崩溃记录（`crash_log`）。**只读**：不做 inline hook、不写内存、不打补丁、不开 Stalker。构建时没有 `frida/vendor` 会自动降级，不影响出包。
 
 **真实触摸注入**：`IOHIDEventCreateDigitizerEvent` + `UITouch` 私有 setter，tap / double_tap / long_press / swipe / drag / pinch / rotate。
 
@@ -33,9 +35,9 @@
 
 ```bash
 # 已构建的 deb
-dpkg -i com.hoko20.aiflex3_3.0.0_iphoneos-arm64.deb
+dpkg -i com.hoko20.aiflex3_3.1.0_iphoneos-arm64.deb
 # 或直接把 dylib 放进
-/var/jb/Library/MobileSubstrate/DynamicLibraries/FLEX++-3.0.0-arm64-rootless.dylib
+/var/jb/Library/MobileSubstrate/DynamicLibraries/FLEX++-3.1.0-arm64-rootless.dylib
 ```
 
 装完**重启目标 App**（不是重启桌面），FLEX 悬浮工具条上会出现 **AiFlex3** 按钮，点进去是控制面板。
@@ -47,7 +49,7 @@ dpkg -i com.hoko20.aiflex3_3.0.0_iphoneos-arm64.deb
 ```bash
 export THEOS=/opt/theos
 make clean package FINALPACKAGE=1 DEBUG=0 -j1
-# 产物：FLEX++-3.0.0-arm64-rootless.dylib + com.hoko20.aiflex3_3.0.0_iphoneos-arm64.deb
+# 产物：FLEX++-3.1.0-arm64-rootless.dylib + com.hoko20.aiflex3_3.1.0_iphoneos-arm64.deb
 ```
 
 CI：`.github/workflows/build.yml`，push 到 `main` 自动在 `macos-latest` 上构建并上传 artifact `AiFlex3`。注意该 workflow 只拉取 Theos 的 `vendor/include`、`vendor/lib` 两个子模块（`vendor/orion` 已私有，不能全量 init）。
@@ -77,8 +79,9 @@ CI：`.github/workflows/build.yml`，push 到 `main` 自动在 `macos-latest` �
 ## 5. 目录
 
 ```
-FLEXAiFlexMCPServer.m        进程内 MCP 服务：nw_listener + 手写 HTTP/1.1，鉴权、看门狗、5 组工具
+FLEXAiFlexMCPServer.m        进程内 MCP 服务：nw_listener + 手写 HTTP/1.1，鉴权、看门狗、工具组
 FLEXAiFlexRuntime.m          operation 分发与语义层（弱引用 id 表、参数校验、副作用边界）
+FLEXAiFlexFrida.m            原生层只读观测（frida-gum）：模块/符号/线程/内存/扫描/调用栈/崩溃
 FLEXAiFlex3ViewController.m  控制面板：端点/令牌/工具开关/现场报告
 FLEXAiFlex3UI.m              面板视觉组件
 FLEXAiFlexTouchDriver.m      触摸注入后端

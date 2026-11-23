@@ -1,8 +1,9 @@
 # AiFlex3 MCP 能力说明（供 AI Agent 阅读）
 
-> 适用版本：AiFlex3 **3.0.0**（2026-11-23）。包标识 `com.hoko20.aiflex3`，产物 `FLEX++-3.0.0-arm64-rootless.dylib`。
+> 适用版本：AiFlex3 **3.1.0**（2026-11-23）。包标识 `com.hoko20.aiflex3`，产物 `FLEX++-3.1.0-arm64-rootless.dylib`。
 > 本文档描述运行在宿主 App 进程内的 AiFlex3 MCP 服务。把本文件交给任意支持 MCP 的 AI，即可按这里的约定调用。
 > 3.0.0 起**只保留 MCP 这一条对外通道**：原「同机 AiFlex2 App 轮询（:8787）」与「宿主内 AI 聊天界面」已整体移除，仓库更名为 AiFlex3。
+> 3.1.0 新增 `aiflex_frida`：基于 frida-gum 的**只读**原生观测（模块/符号/线程/内存区间/内存读/特征扫描/调用栈/崩溃记录），不做 inline hook、不写内存、不打补丁。
 
 ---
 
@@ -12,22 +13,24 @@
 
 | 维度 | 数量 |
 |---|---|
-| MCP 工具 | 6 个 |
-| MCP operation | 62 个（read 28 / sensitive 9 / control 20 / script 1 / trace 4） |
-| 授权组 | 5 组（read 始终开；sensitive / control / script / tracing 默认关） |
+| MCP 工具 | 7 个 |
+| MCP operation | 73 个（read 28 / sensitive 9 / control 20 / script 1 / trace 4 / frida 11） |
+| 授权组 | 5 组（read 始终开；sensitive / control / script / tracing 默认关；`aiflex_frida` 挂在 sensitive 下，不新增开关） |
 | 真实触摸手势 | 7 种 |
 | FLEX 原生工具入口 | 全部 FLEX globals 行 + `extension.headers` + `extension.disassembly` |
+| 原生层只读观测 | frida-gum（模块/符号/线程/内存区间/内存读/特征扫描/回调栈/崩溃记录） |
 
-### 0.2 六个工具
+### 0.2 七个工具
 
 | 工具 | 授权 | operation 数 | 能力域 | 详见 |
 |---|---|---|---|---|
-| `aiflex_status` | read | — | 端点、监听状态、5 组授权、宿主版本、选中对象 | §5 |
+| `aiflex_status` | read | — | 端点、监听状态、5 组授权、宿主版本、选中对象、Frida 引擎状态 | §5 |
 | `aiflex_read` | read | 28 | 现场认知、界面读取、对象与类、数据元信息、能力探测 | §6 |
 | `aiflex_sensitive` | sensitive | 9 | 头文件、网络正文、日志/文件内容、defaults 值、Keychain 元数据、截图 | §7 |
 | `aiflex_control` | control | 20 | 面板与 FLEX 导航、输入、点击、滚动、方法调用、真实手势 | §8 |
 | `aiflex_script` | script | 1（`run_js`） | 仅当前页 WKWebView/UIWebView 执行 JS | §13.7 |
 | `aiflex_trace` | tracing | 4（`start`/`read`/`stop`/`clear`） | 实例方法 IMP 替换 + 调用记录（实验） | §13.8 |
+| `aiflex_frida` | sensitive | 11 | 原生层只读观测：模块/符号/线程/内存区间/内存读/特征扫描/回调栈/崩溃记录 | §18 |
 
 ### 0.3 `aiflex_read` 的 28 个 operation 分组
 
@@ -91,15 +94,14 @@
 | 缺失能力 | 影响 |
 |---|---|
 | C / Swift / 静态函数 inline hook | 只能到 ObjC 方法级（`aiflex_trace`），系统库函数动不了 |
-| 任意地址内存读 / 写 / 补丁 | 无 `read_mem` / `write_mem` / `patch` |
-| 内存特征扫描（AOB） | 无 `scan` |
-| 模块导出/导入符号枚举 | `runtime_images` 只列路径，无符号级 |
+| 任意地址内存 **写** / 代码补丁 | `aiflex_frida` 只提供 `read_mem` / `scan`，不提供 `write_mem` / `patch` |
 | 指令级追踪 / 覆盖率 | 无 Stalker 类能力 |
-| 崩溃现场捕获（信号 + backtrace） | DoKit 面板有 UI，MCP 拿不到 |
 | 跨进程 attach / spawn / 进程列表 | 受 App 沙盒与 `task_for_pid` 限制，进程内无法实现 |
 | 跑 frida 的 `.js` / `.ts` 脚本 | 现有 `run_js` 只作用于 WKWebView，不是 GumJS |
 
-补齐路径见 §17（Frida 集成规划）：进程内部分用 `frida-gum`，跨进程部分需设备侧 root `frida-server`。
+已在 3.1.0 补齐（`aiflex_frida`）：模块导出/导入符号枚举、任意地址内存**读**、内存特征扫描、线程列表、主线程符号化调用栈、映射区间、崩溃记录。详见 §18。
+
+写类能力（hook / patch / Stalker）与跨进程控制仍不在本 dylib 内，理由见 §17.1 与 §18.6。
 
 ---
 
@@ -146,10 +148,12 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 | 组 | 开关 | 不开启的后果 |
 |---|---|---|
 | read | 始终可用 | `aiflex_status` / `aiflex_read` |
-| sensitive | 手机面板「敏感读取」 | `aiflex_sensitive` 不出现在 `tools/list` |
+| sensitive | 手机面板「敏感读取」 | `aiflex_sensitive` **和** `aiflex_frida` 都不出现在 `tools/list` |
 | control | 手机面板「界面控制」 | `aiflex_control` 不出现在 `tools/list` |
 | script | 手机面板「脚本执行」 | `aiflex_script` 不出现在 `tools/list` |
 | tracing | 手机面板「方法追踪」 | `aiflex_trace` 不出现在 `tools/list` |
+
+`aiflex_frida` 不新增开关，挂在 sensitive 下：能读进程内存就等于敏感读取，和 `sandbox_read` / `class_header` 同级。它本身只读，没有写类 operation。
 
 所有写操作、敏感读取都必须由手机端用户显式授权；授权关闭时工具直接不可见，调用会报“未知工具”。
 
@@ -474,9 +478,9 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 12. 版本
 
-- 文档版本：2026-11-23（AiFlex3 3.0.0）
-- 插件：`com.hoko20.aiflex3` 3.0.0，产物 `FLEX++-3.0.0-arm64-rootless.dylib` / `com.hoko20.aiflex3_3.0.0_iphoneos-arm64.deb`
-- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息
+- 文档版本：2026-11-23（AiFlex3 3.1.0）
+- 插件：`com.hoko20.aiflex3` 3.1.0，产物 `FLEX++-3.1.0-arm64-rootless.dylib` / `com.hoko20.aiflex3_3.1.0_iphoneos-arm64.deb`
+- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息、**原生层只读观测（模块/符号/内存/线程/调用栈/崩溃）**
 - 仓库：https://github.com/hoko20/AiFlex3
 - 自动构建：GitHub Actions `Build AiFlex3`，push 到 `main` 触发，产物以 artifact 形式提供
 
@@ -686,6 +690,26 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 16. 变更记录
 
+### 3.1.0（2026-11-23）—— 新增 `aiflex_frida`（只读原生观测）+ 修崩溃监控
+
+**新增**
+
+- 工具 `aiflex_frida`（挂 sensitive 组，11 个只读 operation）：`status`、`modules`、`exports`、`imports`、`resolve`、`threads`、`backtrace`、`memory_ranges`、`read_mem`、`scan`、`crash_log`。详见 §18。
+- 源文件 `FLEXAiFlexFrida.h/.m`，静态链接 `frida-gum`（`frida-gum-devkit` 的 `ios-arm64` 变体）。
+- 构建降级：`frida/vendor` 缺失时自动定义 `GX_NO_GUM`，引擎降级为「仅 `status` / `backtrace` / `crash_log`」，其余 operation 返回明确错误，构建不会因此失败。
+- `ThirdPartyNotices/NOTICE` 补 Frida 条目（wxWindows Library Licence 3.1，静态链接例外，注明上游 tag 与可重链接材料位置）。
+
+**修复（`FLEXDoKitCrashMonitor`，与 Frida 无关的独立缺陷）**
+
+- 不再接管 `SIGPIPE`：原来 socket 断连即触发 `raise(sig)`，等价于「MCP 客户端断开一次，宿主 App 被杀一次」。
+- 信号 handler 内移除全部 ObjC 分配（`NSThread callStackSymbols` / `NSDate` / `dispatch_async`），改为 `backtrace()` + `write()` 落盘裸帧，下次启动时符号化回捞——避免崩在堆损坏时 handler 二次崩溃。
+- `signal()` → `sigaction()` + `SA_SIGINFO|SA_ONSTACK` + `sigaltstack` 备用栈；转发上一个 handler 而不是无条件 `raise`；`stopCrashMonitoring` 逐个还原原始 `sigaction`。
+- 崩溃日志落盘前用 `NSPropertyListSerialization` 预校验，避免非 plist 字段导致静默写入失败。
+
+**不变**
+
+- 6 个既有工具的名称、5 组授权、默认端口 8790、`tools/list` 契约全部不变；`aiflex_frida` 是新增项，旧客户端不受影响。
+
 ### 3.0.0（2026-11-23）—— 定名 AiFlex3，只保留 MCP 通道
 
 **移除**
@@ -720,69 +744,156 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ---
 
-## 17. Frida 集成规划（未实现，设计已定稿）
+## 17. Frida 集成（3.1.0 落地只读子集）
 
-目标：补上 §0.7 里那批「进程内插桩」空白，仍然只走 MCP 一条通道，客户端配置不变。
+目标：补上 §0.7 里那批「进程内原生观测」空白，仍然只走 MCP 一条通道，客户端配置不变。
 
 ### 17.1 能力边界
 
 | 能力 | AiFlex3 进程内（frida-gum） | 需要设备侧 root（frida-server） |
 |---|---|---|
-| 任意地址 inline hook（C / Swift / 静态函数） | 可行 | — |
-| hook 时读寄存器、参数、返回值 | 可行（`GumInvocationContext`） | — |
-| 内存读 / 写 / 补丁 | 可行 | — |
-| 内存特征扫描 | 可行（C 层无现成 API，需自行遍历 region 匹配） | — |
-| 模块 / 导出 / 导入符号枚举 | 可行 | — |
-| 指令级追踪（Stalker）、崩溃 backtrace | 可行但重，必须限时 | — |
+| 模块 / 导出 / 导入符号枚举 | **已实现**（`modules` / `exports` / `imports`） | — |
+| 内存读（分页校验） | **已实现**（`read_mem`） | — |
+| 内存特征扫描 | **已实现**（`scan`，C 层自行遍历 region 匹配） | — |
+| 线程列表、映射区间 | **已实现**（`threads` / `memory_ranges`） | — |
+| 调用栈回溯、崩溃记录 | **已实现**（`backtrace` / `crash_log`） | — |
+| 内存写 / 代码补丁 | 不做（见 §18.6） | — |
+| 任意地址 inline hook | 不做（需独立的备份/自检/回滚，见 §18.6） | — |
+| 指令级追踪（Stalker） | 不做（性能与 PAC 风险） | — |
 | 跨进程 attach、spawn、进程列表、kill | **不可行**（无 `task_for_pid`） | 必需 |
 | 脱离沙盒读其他 App 容器 | **不可行** | 必需 |
 | 跑 frida-compile 的 `.js`/`.ts` | 需 GumJS：`frida-gum-devkit` **不含**，要 gadget 或自编译 agent | — |
 
-结论：分析类能力约 70–80% 可内嵌；设备控制类不塞进这个 dylib。
+### 17.2 阶段状态
 
-### 17.2 三阶段
-
-| 阶段 | 内容 | 依赖 |
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| Phase 1 | `frida-gum` 静态内嵌，暴露 `aiflex_frida` 核心 operation | `frida-gum-devkit-17.27.4-ios-arm64.tar.xz` |
-| Phase 2 | 接 GumJS，支持直接投喂 `.js`/`.ts`（`script_eval`） | gadget 或自编译 `frida-agent`（quickjs） |
-| Phase 3 | `frida-core-devkit` 客户端 + 设备侧 rootless `frida-server`，暴露 `device_processes` / `attach` / `spawn` | `/var/jb/usr/sbin/frida-server` + root |
+| Phase 1 | `frida-gum` 静态内嵌，暴露 11 个**只读** operation | **已完成（3.1.0）** |
+| Phase 1.5 | `hook` / `patch` / `unhook`（需要目标校验、自检、自动备份、`undo(all)`） | 未做 |
+| Phase 2 | 接 GumJS，支持直接投喂 `.js`/`.ts`（`script_eval`） | 未做 |
+| Phase 3 | `frida-core-devkit` 客户端 + 设备侧 rootless `frida-server` | 未做 |
 
-### 17.3 Phase 1 的工具契约（规划）
-
-新增工具 `aiflex_frida`，授权组 `frida`（面板开关，默认关）；写类操作再叠一层「Frida 写入」开关。
-
-| operation | 参数 | 授权 | 说明 |
-|---|---|---|---|
-| `status` | — | frida | 引擎版本、是否初始化、hook 数、Stalker 状态 |
-| `modules` | `filter`,`limit` | frida | base / size / path |
-| `exports` | `module`,`query`,`limit` | frida | 符号名、类型、地址 |
-| `imports` | `module`,`query` | frida | 依赖符号与来源 |
-| `resolve` | `module`+`name` 或 `address` | frida | 名字 ↔ 地址互查 |
-| `read_mem` | `address`,`length`≤64K,`format` | frida | hex / utf8 / u32 / u64 / ptr |
-| `scan` | `pattern`(hex + `??` 通配),`module`,`limit` | frida | 特征码扫描 |
-| `hook` | `target`,`signature`,`max_hits`,`capture` | frida-write | 返回 `hookId` |
-| `hooks` | — | frida | 已装 hook、命中次数、最近调用快照 |
-| `unhook` | `id` 或 `all` | frida-write | 必须能一键全撤 |
-| `patch` | `address`,`hex` | frida-write | 自动备份原始字节 |
-| `trace` | `thread`,`duration`≤10s,`events` | frida-trace | Stalker，硬超时 |
-| `crash_log` | — | frida | 最近异常/信号 + backtrace |
-
-### 17.4 构建集成
+### 17.3 构建集成（已实现）
 
 ```makefile
-FRIDA_VERSION = 17.27.4
-$(LIBRARY_NAME)_FILES   += $(shell find frida -maxdepth 1 -name '*.c')
-$(LIBRARY_NAME)_CFLAGS  += -I./frida/vendor -DGUM_STATIC
-$(LIBRARY_NAME)_LDFLAGS += -L./frida/vendor -lfrida-gum
+FRIDA_VENDOR = ./frida/vendor
+ifneq ($(wildcard $(FRIDA_VENDOR)/libfrida-gum.a),)
+$(LIBRARY_NAME)_CFLAGS  += -I$(FRIDA_VENDOR) -DGUM_STATIC
+$(LIBRARY_NAME)_LDFLAGS += $(FRIDA_VENDOR)/libfrida-gum.a -lc++
+else
+$(LIBRARY_NAME)_CFLAGS  += -DGX_NO_GUM=1
+endif
 ```
 
-CI 在 `Install Theos` 之后追加：下载 `frida-gum-devkit-$VER-ios-arm64.tar.xz` 解到 `frida/vendor/`（`xz` 已在 brew 安装列表里），并断言 `libfrida-gum.a` 存在。
+关键点：**vendor 缺失不阻塞构建**。没有 devkit 时自动定义 `GX_NO_GUM`，引擎降级——`status` / `backtrace` / `crash_log` 仍可用（它们不依赖 gum），其余 operation 返回明确错误而不是静默失败。
 
-### 17.5 已知风险
+CI 在 `Install Theos` 之后追加 `Fetch frida-gum devkit`：取 `releases/latest` 的 tag（不写死版本，避免 404），下载 `frida-gum-devkit-$VER-ios-arm64.tar.xz` 解到 `frida/vendor/`，并断言 `libfrida-gum.a` 存在；随后 `Diagnose gum symbols` 打印 gum 内置 capstone 与 `gum_` 符号数量用于排查冲突。`frida/vendor/` 已在 `.gitignore` 中。
 
-1. **capstone 符号冲突**：gum 静态库内 vendored capstone 与 `x/capstone` 都会定义 `cs_open` / `cs_disasm`，需二选一（推荐反汇编统一走 gum 那份）或给 `x/capstone` 加符号前缀。
-2. **arm64e / PAC**：自算 hook 目标地址要先 strip PAC，或统一走 `gum_module_find_export_by_name`。
-3. **崩溃放大**：任意地址补丁没有 selector 黑名单可依赖，`patch` 前必须备份、`unhook(all)` 必须可用，并带一次开机自检。
-4. **体积与许可**：dylib 约 9.4 MB → 14–16 MB；frida 为 wxWindows Library Licence 3.1，需在 `ThirdPartyNotices/` 补一份 NOTICE。
+### 17.4 已知风险与处置
+
+1. **capstone 符号冲突**：gum 静态库内 vendored 一份 capstone，仓库又有 `x/capstone`。静态库按需拉取 `.o`，本项目只用到 memory/module/process/backtracer，不引用 stalker/relocator，正常情况那些目标文件不会被拉入。若真出现 `duplicate symbol`，处置顺序：先确认是否误引 stalker → 给 `x/capstone` 加 `objcopy --prefix-symbols=flx_` → 最后才考虑把反汇编统一到 gum 那份。
+2. **arm64e / PAC**：地址一律经 `gum_module_get_range` / `gum_module_find_export_by_name` 获取，不自己从函数指针里截位。
+3. **崩溃放大**：这就是本组只做只读的原因——写类操作没有 selector 黑名单可依赖，一旦写错位置，崩溃点与操作时刻解耦、无法归因。
+4. **体积与许可**：dylib 约 +4~5 MB；frida 为 wxWindows Library Licence 3.1，已在 `ThirdPartyNotices/NOTICE` 补条目，说明静态链接来源 tag 与可重链接材料位置。
+
+---
+
+## 18. `aiflex_frida`（需「敏感读取」授权，只读）
+
+挂在 **sensitive** 组下（不新增授权开关）：能读进程内存就等价于敏感读取，与 `sandbox_read` / `class_header` 同级。面板上打开「敏感读取」即可用，关掉即不可见（`tools/list` 不再返回该工具）。
+
+### 18.1 参数
+
+| 参数 | 类型 | 用于 | 说明 |
+|---|---|---|---|
+| `operation` | enum | 全部 | 见 18.2 |
+| `address` | string | `resolve` / `read_mem` | **必须字符串**，如 `"0x104a2b000"`。JSON number 是 double，超过 2^53 会丢精度 |
+| `module` | string | `exports` / `imports` / `resolve` / `scan` | 模块名或完整路径，先 `modules` 确认 |
+| `name` | string | `resolve` | 符号名 |
+| `query` | string | `exports` / `imports` / `threads` | 大小写不敏感子串过滤 |
+| `filter` | string | `modules` / `memory_ranges` | 模块名/路径子串；权限串如 `"r-x"`、`"rw"` |
+| `length` | integer | `read_mem` | 1–65536，默认 256 |
+| `format` | enum | `read_mem` | `hex` / `utf8` / `u32` / `u64` / `ptr` |
+| `pattern` | string | `scan` | 十六进制，`??` 通配，如 `"48 8B ?? ?? 89"` |
+| `limit` | integer | 多个 | 默认 200，最大 2000（`scan` 默认 20 / 最大 100） |
+| `depth` | integer | `backtrace` | 1–96，默认 32 |
+| `max_bytes` | integer | `scan` | 扫描上限，默认 32 MB，最大 256 MB |
+
+### 18.2 operation 一览
+
+| operation | 返回 | 安全保证 |
+|---|---|---|
+| `status` | 引擎名/版本/可用性、11 个 operation 列表、`readOnly:true`、`writeCapabilities:[]` | 不依赖 gum，永远可调 |
+| `modules` | `total` / `count` / `truncated` / `modules[{name,path,base,size}]` | 只读 dyld 镜像表 |
+| `exports` | `module` / `base` / `size` / `total` / `exports[{name,type,address}]` | 模块不存在返回明确错误，不崩 |
+| `imports` | `imports[{name,type,fromModule}]` | 同上 |
+| `resolve` | 传 `address` → `image` / `imageOffset` / `symbol` / `symbolOffset`；传 `module`+`name` → `address` / `offset` / `kind` | `dladdr` + `gum_module_find_*`，找不到即报错 |
+| `threads` | `threads[{id,name,state,contextAvailable}]` | **不读寄存器上下文**，不提供 suspend/resume |
+| `backtrace` | `thread`（main/other）/ `frames[{index,address,image,symbol,offset}]` | 在主线程取栈，`backtrace` + `dladdr` 符号化 |
+| `memory_ranges` | `ranges[{start,end,size,protection}]` | 纯枚举，不触碰内容 |
+| `read_mem` | `read` / `truncated` / `data`（按 format） | **逐页校验可读**，遇不可读立即停止并标 `truncated`，绝不「先读再判断」 |
+| `scan` | `scanned` / `truncated` / `matches[{address,offsetInRange}]` | 只进可读且**不可执行**的页；跳过不可读页与超大 region；4 秒预算 + `max_bytes` 双限 |
+| `crash_log` | `entries[{kind,reason,timestamp,callStack}]` | **只读 DoKit 已有记录，不注册新 signal handler** |
+
+### 18.3 典型用法
+
+```jsonc
+// 1. 看引擎是否可用
+{ "operation": "status" }
+
+// 2. 定位系统库
+{ "operation": "modules", "filter": "libsystem_kernel", "limit": 10 }
+
+// 3. 查符号地址
+{ "operation": "exports", "module": "libsystem_kernel.dylib", "query": "open", "limit": 20 }
+
+// 4. 符号 ↔ 地址互查
+{ "operation": "resolve", "module": "libsystem_kernel.dylib", "name": "open" }
+{ "operation": "resolve", "address": "0x1a2b3c4d0" }
+
+// 5. 读内存（先按 u64 看指针，再按 utf8 看字符串）
+{ "operation": "read_mem", "address": "0x104a2b000", "length": 128, "format": "hex" }
+
+// 6. 特征码扫描
+{ "operation": "scan", "pattern": "48 8B ?? ?? 89", "limit": 10 }
+
+// 7. 主线程在干什么
+{ "operation": "backtrace", "depth": 32 }
+
+// 8. 上次崩溃
+{ "operation": "crash_log", "limit": 5 }
+```
+
+### 18.4 本轮顺带修掉的崩溃源（与本工具无关，但同批交付）
+
+`FLEXDoKitCrashMonitor` 之前有三处会**主动制造崩溃**：
+
+| 位置 | 问题 | 现状 |
+|---|---|---|
+| 注册 `SIGPIPE` 并在 handler 里 `raise(sig)` | iOS 上 socket 断连就产生 `SIGPIPE`，等于「MCP 客户端断开一次，宿主 App 被杀一次」 | 改为 `SIG_IGN`，让 `write`/`send` 正常返回 `EPIPE` |
+| 在 `SIGSEGV` handler 里调 `NSThread callStackSymbols` / `NSDate` / `dispatch_async` | 非异步信号安全的堆分配；崩在堆损坏时会二次崩溃形成崩溃循环 | 信号路径只做 `backtrace()` + `write()` 落盘；符号化推迟到下次启动 |
+| `signal()` 无 `SA_ONSTACK`、`stop` 时不还原 | 栈溢出崩溃取不到栈；handler 与其它监控组件互顶 | 改 `sigaction` + `SA_SIGINFO\|SA_ONSTACK` + `sigaltstack` 备用栈 + 链式转发 |
+
+`crash_log` 读的就是这套修好之后的记录：信号类崩溃在当次不落地（进程已死），下一次启动时把裸帧符号化回捞。
+
+### 18.5 资源与性能
+
+| 项 | 值 |
+|---|---|
+| 引擎初始化 | `gum_init_embedded()` 全局一次，`dispatch_once` 保护；重复调用会崩，因此不做懒散初始化 |
+| 执行队列 | 专有串行队列 `com.hoko20.aiflex3.frida`，**不占主线程**（`backtrace` / `crash_log` 例外，它们必须在主线程） |
+| `read_mem` 上限 | 65536 字节；`hex` 格式额外截到 4096 字节（避免响应体膨胀） |
+| `scan` 上限 | 32 MB / 4 秒（默认），可调到 256 MB；命中默认 20 条、最多 100 条 |
+| 符号枚举上限 | 单模块默认 200 条，最多 2000 条，超出标 `truncated:true` |
+| 内存增量 | dylib 约 +4~5 MB（静态链接 gum） |
+
+### 18.6 为什么写类能力不在这组里
+
+`hook` / `patch` / `Stalker` 的风险结构完全不同：它们改的是**执行流和代码页**，崩点在下一次调用而不是操作时刻，无法归因；并且没有 selector 黑名单可依赖（`invoke_method` 那 5 条黑名单在任意地址上毫无意义）。
+
+要做，必须先具备四个前置：全局 hook 注册表（按 target 地址去重）、hook 目标三重校验（4 字节对齐 / 在可执行段 / 非跳板指令）、patch 自动备份 + `undo(all)`、以及引擎自检（hook 一个已知函数再 revert，失败就把整组置为不可用）。
+
+这四项齐了才有资格谈「可回滚」，所以它们是 Phase 1.5 的独立交付，不和只读能力共用一个开关。
+
+
 

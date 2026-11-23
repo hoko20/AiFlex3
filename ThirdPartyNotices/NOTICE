@@ -19,3 +19,32 @@ explicit delivery versus semantic-outcome reporting. No KIF/EarlGrey test
 framework or XCTest runtime is bundled as a dependency.
 
 Apache License 2.0 text is in DylixTouch-APACHE-2.0.txt.
+
+---
+
+Frida (frida-gum)
+
+FLEXAiFlexFrida.m links the frida-gum static library, distributed as
+frida-gum-devkit from:
+
+https://github.com/frida/frida
+
+Copyright (C) 2010-2026 Ole André Vadla Ravnås <oleavr@gmail.com>
+Licensed under the wxWindows Library Licence, Version 3.1
+(an LGPL 2.1 derivative with a static-linking exception).
+
+The licence text is available at:
+https://github.com/frida/frida/blob/main/COPYING
+
+AiFlex3 uses frida-gum in a read-only capacity only: module and symbol
+enumeration, thread listing, memory range enumeration, bounds-checked memory
+reads, hex pattern scanning, and crash log retrieval. No inline hooking,
+memory writing, code patching, or Stalker instrumentation is performed, and
+GumJS is not bundled.
+
+Full corresponding source for the unmodified frida-gum library is available
+from the upstream repository at the release tag recorded in
+.github/workflows/build.yml. Linking is static against the official devkit
+build of that tag; rebuild instructions are the upstream releng scripts
+(frida/releng) for the ios-arm64 target.
+

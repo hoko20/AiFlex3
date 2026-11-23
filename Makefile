@@ -1,6 +1,6 @@
 PACKAGE_IDENTIFIER = com.hoko20.aiflex3
 PACKAGE_NAME = AiFlex3
-PACKAGE_VERSION = 3.0.0
+PACKAGE_VERSION = 3.1.0
 PACKAGE_ARCHITECTURE = arm64
 PACKAGE_REVISION = 1
 PACKAGE_SECTION = Tweaks
@@ -45,7 +45,8 @@ $(LIBRARY_NAME)_FILES = $(shell find . \( -name '*.m' -o -name '*.mm' -o -name '
     grep -v "x/retdec-build/" | \
     grep -v "x/Shared/FLEXKeychain.m" | \
     grep -v "x/Shared/FLEXKeychainQuery.m" | \
-    grep -v "x/capstone/")
+    grep -v "x/capstone/" | \
+    grep -v "frida/vendor/")
 
 # Capstone核心文件（只包含ARM/ARM64架构）
 CAPSTONE_CORE = $(shell find x/capstone -maxdepth 1 -name "*.c")
@@ -90,6 +91,20 @@ $(LIBRARY_NAME)_OBJCFLAGS = -fobjc-arc
 
 # 兼容性
 $(LIBRARY_NAME)_CFLAGS += -miphoneos-version-min=15.0
+
+# ---- Frida gum（只读原生观测引擎）----
+# CI 会把 frida-gum-devkit 解压到 frida/vendor。本地没有 devkit 时定义 GX_NO_GUM，
+# 引擎降级为「仅 status / backtrace / crash_log 可用」，其余 operation 返回明确错误，
+# 构建照常通过——不会因为缺库把整条流水线拖红。
+# 注意：gum 的 capstone 与仓库 x/capstone 只在链接期按需拉取 .o，
+# 本项目不引用 stalker/relocator，因此正常情况下不会发生 duplicate symbol。
+FRIDA_VENDOR = ./frida/vendor
+ifneq ($(wildcard $(FRIDA_VENDOR)/libfrida-gum.a),)
+$(LIBRARY_NAME)_CFLAGS += -I$(FRIDA_VENDOR) -DGUM_STATIC
+$(LIBRARY_NAME)_LDFLAGS += $(FRIDA_VENDOR)/libfrida-gum.a -lc++
+else
+$(LIBRARY_NAME)_CFLAGS += -DGX_NO_GUM=1
+endif
 
 include $(THEOS)/makefiles/common.mk
 include $(THEOS_MAKE_PATH)/library.mk

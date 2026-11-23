@@ -40,6 +40,38 @@ jobs:
           echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/theos/vendor/dm.pl" >> "$GITHUB_PATH"
 
+      - name: Fetch frida-gum devkit
+        run: |
+          set -eo pipefail
+          # 版本不写死：release 的 tag 会变，写死容易 404；先取 latest 再按资产名回退。
+          VER=$(curl -fsSL https://api.github.com/repos/frida/frida/releases/latest | jq -r '.tag_name')
+          echo "frida version: $VER"
+          mkdir -p frida/vendor
+          ASSET="frida-gum-devkit-${VER}-ios-arm64.tar.xz"
+          URL="https://github.com/frida/frida/releases/download/${VER}/${ASSET}"
+          if ! curl -fL --retry 3 -o /tmp/gum.tar.xz "$URL"; then
+            echo "精确资产名不可用，改从资产列表匹配"
+            ALT=$(curl -fsSL "https://api.github.com/repos/frida/frida/releases/tags/${VER}" \
+                  | jq -r '.assets[].browser_download_url' \
+                  | grep -E 'gum-devkit.*ios-arm64' | head -1)
+            test -n "$ALT"
+            echo "using $ALT"
+            curl -fL --retry 3 -o /tmp/gum.tar.xz "$ALT"
+          fi
+          tar -xJf /tmp/gum.tar.xz -C frida/vendor
+          test -f frida/vendor/libfrida-gum.a
+          ls -lh frida/vendor
+
+      - name: Diagnose gum symbols
+        run: |
+          # 只做诊断不失败：gum 静态库内置一份 capstone，与仓库 x/capstone 同名符号
+          # 只在被同时链接时冲突。本项目只用到 memory/module/backthread，不引用
+          # stalker/relocator，理论上那些 .o 不会被拉入。这里把数量打出来便于排查。
+          echo "gum 内置 capstone 符号数:"
+          nm -gU frida/vendor/libfrida-gum.a 2>/dev/null | grep -cE ' _cs_(open|close|disasm)$' || echo 0
+          echo "gum 导出 gum_ 符号数:"
+          nm -gU frida/vendor/libfrida-gum.a 2>/dev/null | grep -c ' _gum_' || echo 0
+
       - name: Build AiFlex3
         run: make clean package FINALPACKAGE=1 DEBUG=0 -j1
 
