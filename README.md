@@ -59,14 +59,25 @@ artifact 里有两份 dylib，按注入方式选：
 | `AiFlex2-FLEX++-<ver>-arm64-rootless.dylib` | `ldid -S` 假签名 | 传统越狱注入（MobileSubstrate / ElleKit）、deb 安装 |
 | `AiFlex2-FLEX++-<ver>-arm64-rootless-unsigned.dylib` | **无签名** | LiveContainer / 侧载注入器 |
 
-LiveContainer 必须用 **unsigned** 那份。原因：它的 Tweak Manager 靠"签名缺失或过期"来触发用你从 SideStore / AltStore 导入的证书重签 guest 和 tweak（JIT-less 模式下这是唯一合法的签名来源）。若导入带 ad-hoc 假签名的版本，LiveContainer 会误判为"已签好"而跳过重签，启动时 `dlopen` 报 `code signature invalid in <...> (errno=1)` —— **这正是"有些 App 正常、有些报错"的原因**：开了 JIT 的 guest 绕过了校验，JIT-less 的 guest 过不去。
+LiveContainer 必须用 **unsigned** 那份，而且必须让 LiveContainer 自己重签它。原因：JIT-less 模式下 guest 里的所有可执行代码都得用你从 SideStore / AltStore 导入的证书签名（同 team ID 才能过 library validation），而这份 dylib 是通用产物、无法预置你的证书，所以交给 LiveContainer 在启动时重签 —— 它靠"签名缺失/无效"来触发这一步。
+
+**两类报错正好对应两种没签对的极端：**
+
+| 报错 | 原因 | 修法 |
+|---|---|---|
+| `code signature invalid in <...> (errno=1)` | 用了带 `ldid -S` ad-hoc 假签名的那份，LiveContainer 误判为"已签好"跳过重签；ad-hoc 没有 team ID，过不了 library validation | 换 `*-unsigned.dylib` |
+| `mapped file has no cdhash, completely unsigned? Code has to be at least ad-hoc signed.` | unsigned 那份**没有被 LiveContainer 重签**——多半是用文件管理器直接拷进 `Documents/Tweaks` 没走 UI 导入，或证书没导入导致 Sign 失败 | 见下方流程，务必走 Import Tweak 并确认证书 |
+
+> 关键：`unsigned` 只是正确的**输入**，不代表能被直接 `dlopen`。它必须经过 LiveContainer 重签、写入 cdhash 后才能加载。报 `no cdhash` 就等于明确告诉你"重签这一步没发生"。
 
 正确导入流程：
 
-1. LiveContainer → **Tweaks** 标签 → `+` → **Import Tweak** → 选 `*-unsigned.dylib`（不要直接用文件管理器拷进 `Documents/Tweaks`，那样不会走签名记录）。
-2. 若之前导入过带签名的旧版本，先删掉再重新导入；或在 Tweaks 标签点 **Sign** 强制重签。
-3. 确认已在 LiveContainer 设置里做过 **Import Certificate from SideStore**（JIT-less 必需，否则没有可用证书签名）。
-4. 分配到目标 App 的 Tweak Folder（全局目录对 guest 全开，app-specific 只对指定 App 生效）。
+1. 若之前用文件管理器把 dylib 拷进过 `Documents/Tweaks`，先删掉；Tweaks 标签里对应的旧条目也删掉（避免 `TweakInfo.plist` 残留导致状态混乱）。
+2. 确认已在 LiveContainer 设置里做过 **Import Certificate from SideStore**（JIT-less 必需，否则没有可用证书签名，Sign 会失败）。
+3. LiveContainer → **Tweaks** 标签 → `+` → **Import Tweak** → 选 `*-unsigned.dylib`（**不要**再用文件管理器直接拷，那样不会走签名记录，就会报 `no cdhash`）。
+4. 导入后在 Tweaks 标签点一次 **Sign** 强制重签（或重启 guest 让它自动重签）。
+5. 分配到目标 App 的 Tweak Folder（全局目录对 guest 全开，app-specific 只对指定 App 生效）。
+6. 重签成功后 `dlopen` 不再报签名错；若仍失败，删掉重新导入一次。
 
 > iOS 26 起 JIT 不可用，所有可执行文件都必须由 LiveContainer 用导入证书重签，因此 unsigned 产物是这一路径的唯一正确输入。传统越狱用户忽略本节，继续用带签名的那份。
 
