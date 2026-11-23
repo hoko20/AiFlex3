@@ -669,7 +669,7 @@ static gboolean GXScanRange(const GumRangeDetails *details, gpointer user_data) 
     NSString *query = GXStringArg(arguments, @"query");
 
     NSMutableArray *all = [NSMutableArray array];
-    gum_process_enumerate_threads(GXCollectThread, (__bridge gpointer)all);
+    gum_process_enumerate_threads(GXCollectThread, (__bridge gpointer)all, GUM_THREAD_FLAGS_NONE);
 
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSDictionary *entry in all) {
