@@ -145,7 +145,9 @@ after-stage::
 	# "签名缺失/无效"触发用用户导入的证书重签（JIT-less 模式必需）；若带 ldid
 	# 假签名会被误判为已签好而跳过重签，dlopen 报 code signature invalid errno=1。
 	# staging 里的那份照常 ldid -S 签名，供 .deb 和传统越狱注入使用。
-	@cp "$(THEOS_STAGING_DIR)/var/jb/Library/MobileSubstrate/DynamicLibraries/$(LIBRARY_NAME).dylib" "$(THEOS_PACKAGE_DIR)/$(ARTIFACT_BASE)-unsigned.dylib"
+	@STAGED_DYLIB=$$(find "$(THEOS_STAGING_DIR)" -name "$(LIBRARY_NAME).dylib" | head -1); \
+	test -n "$$STAGED_DYLIB" || { echo "staged dylib not found"; exit 1; }; \
+	cp "$$STAGED_DYLIB" "$(THEOS_PACKAGE_DIR)/$(ARTIFACT_BASE)-unsigned.dylib"
 	@find "$(THEOS_STAGING_DIR)" -name "$(LIBRARY_NAME).dylib" -exec ldid -S {} \;
 	@mkdir -p "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex3"
 	@cp ThirdPartyNotices/NOTICE ThirdPartyNotices/DylixTouch-APACHE-2.0.txt "$(THEOS_STAGING_DIR)/usr/share/doc/com.hoko20.aiflex3/"
