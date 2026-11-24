@@ -141,7 +141,7 @@ curl -s http://192.168.31.235:8790/mcp \
 | `find_instances` | `class`,`limit` | 找界面上某类的实例（**不含堆扫描**） |
 | `class_search` / `class_info` | `query` / `name` | 搜已加载类 / 查类的方法与属性（含 type encoding） |
 | `runtime_images` | `query` | 已加载镜像路径 |
-| `network_list` / `network_search` | — / `query`,`status` | 最近 50 条网络元数据（不含正文） |
+| `network_list` / `network_search` | — / `query`,`host`,`method`,`status`,`limit` | 最近 50 条网络元数据（不含正文）；字段与抓包链路见 §5.4 |
 | `sandbox_list` / `defaults_keys` | `path` / 无 | 沙盒目录 / UserDefaults 键名 |
 | `snapshot` | `action`:`save`/`diff`/`clear` | 界面快照与对比（验证"操作后页面真的变了"） |
 | `app_info` / `device_info` / `chat_status` | 无 | 环境信息 / 面板与覆盖层状态 |
@@ -152,7 +152,7 @@ curl -s http://192.168.31.235:8790/mcp \
 | operation | 关键参数 | 用途 |
 |---|---|---|
 | `class_header` | `name`,`start_line`,`line_count` | 类头文件，分页（返回 `next_line`） |
-| `network_detail` / `network_export` | `id` / 无 | 单条请求正文（≤16KiB）/ 导出 HAR 风格 JSON |
+| `network_detail` / `network_export` | `id` / 无 | 单条请求参数+正文（≤16KiB，字段全表见 §5.4）/ 导出 HAR 风格 JSON |
 | `sandbox_read` | `path`,`offset`,`limit`,`tail` | 读 UTF-8 文本，默认 128KiB、上限 512KiB，`next_offset` 续读 |
 | `sandbox_grep` | `path`,`query`,`limit` | 文本关键字搜索（单次 ≤8MB） |
 | `defaults_get` / `keychain_list` | `key` / 无 | 单个默认值 / Keychain 账户元数据（**从不返回值**） |
@@ -176,7 +176,61 @@ curl -s http://192.168.31.235:8790/mcp \
 
 `invoke_method` 返回对象时带 `returnId`（弱引用句柄），可接 `object_info(id=returnId)` 继续读。
 
-### 5.4 原生分析三件套（需 sensitive）
+### 5.4 抓包与请求参数（network 全链路）
+
+抓包记录来自 FLEX 的 `FLEXNetworkRecorder`，在 **NSURLSession / NSURLConnection 层**采集——拿到的是**加密前的明文**，所以 HTTPS 请求的 query 参数和 body 都是可读的，不需要解密。四个 operation 分属三个工具组：
+
+```
+aiflex_control(set_network_recording, enabled=true)   ← 先开记录（需 control）
+  → 操作 App
+aiflex_read(network_list)                              ← 最近 50 条元数据（read，恒可用）
+aiflex_read(network_search, query="/api/login", method="POST", status=200, limit=10)
+aiflex_sensitive(network_detail, id=...)               ← 取该条请求参数 + 响应（需 sensitive）
+aiflex_sensitive(network_export)                       ← 导出 HAR 风格 JSON
+```
+
+**`network_detail` 返回字段全表**（一次给全，按 `id` 取单条）：
+
+| 字段 | 内容 | 上限 / 说明 |
+|---|---|---|
+| `id` | 事务 ID | 来自 `network_list` / `network_search`，后续所有抓包操作的句柄 |
+| `host` | 请求域名 | 字符串 |
+| `path` | URL 路径（不含 query） | 240 字符 |
+| `method` | HTTP 方法 | `GET` / `POST` / …，缺省 `GET` |
+| `state` | 事务状态枚举 | FLEX 内部状态值 |
+| `receivedBytes` | 已接收字节数 | 数字 |
+| `startedAt` | 开始时间 | Unix 时间戳（秒） |
+| `status` | HTTP 状态码 | 仅当 response 是 `NSHTTPURLResponse` 时存在 |
+| `url` | **完整 URL，含 query string 参数** | 2048 字符；GET 参数在这里 |
+| `requestContentType` | 请求 `Content-Type` | 120 字符；从请求头单字段读取 |
+| `responseContentType` | 响应 MIME 类型 | 120 字符 |
+| `requestBody` | **请求体明文**（POST/PUT 的 JSON / form 参数） | 16 KiB，超限截断；二进制按文本安全化处理 |
+| `responseBody` | **响应正文明文** | 16 KiB，超限截断 |
+
+`network_list` 只返回前 8 个基础字段（`id`/`host`/`path`/`method`/`state`/`receivedBytes`/`startedAt`/`status`），**不含 `url` 与正文**；要参数必须再调 `network_detail`。返回体还带 `truncated`（是否超过 50 条）与 `recordingEnabled`（记录开关当前状态）。
+
+`network_search` 的过滤参数（返回结果同为元数据，不含正文）：
+
+| 参数 | 说明 |
+|---|---|
+| `query` | 在 `path` 或 `host` 上做不区分大小写的子串匹配 |
+| `host` | 精确按域名子串过滤 |
+| `method` | 按 HTTP 方法过滤（大小写不敏感） |
+| `status` | 按 HTTP 状态码数字过滤 |
+| `limit` | 1–50，默认 20 |
+
+`network_export` 无参，把当前记录写成 HAR 风格 JSON 到 `Documents/AiFlex3/network-<时间戳>.json`，返回相对路径，再用 `sandbox_read` 取回；最多 50 条、每条正文 16 KiB。
+
+**抓包边界（必须说清，别许诺做不到的事）：**
+
+1. **请求头只暴露 `Content-Type` 一个字段**。参数若放在自定义 header（如 `X-Token`、`X-Signature`），MCP 这层取不到。
+2. **请求/响应正文截断 16 KiB**。大文件上传、大 JSON 响应只给前一段。
+3. **记录窗口 50 条**。更早的事务 `network_detail(id=...)` 返回错误「网络记录已过期」——先 `network_list` 拿当前 id，不要缓存旧 id。
+4. **只覆盖 FLEX 观察到的 NSURL 层**。底层 CFNetwork socket、WebSocket 帧、SSL 层原始流量不进这里。
+5. **`x/Decrypt` 是另一条独立线**：fishhook 打 SSL_get_psk_identity / OpenSSL EVP_* / CommonCrypto 拿更底层明文，落 SQLite；它**不通过 MCP 暴露**（`agentOpenSupported: NO`），只能用 App 内「抓取」UI，且默认不自动装 hook（抓启动流量需打开 `AiFlex3DecryptAutoStart`）。
+6. 抓包前置：`set_network_recording(enabled=true)` 开启记录；`network_detail` / `network_export` 在 sensitive 组，`set_network_recording` 在 control 组，两个开关都要开。
+
+### 5.5 原生分析三件套（需 sensitive）
 
 ```
 aiflex_frida:  status / modules / exports / imports / resolve / threads /
@@ -203,7 +257,7 @@ aiflex_dump:   status / image / dump / list
 - `dump` 落在 `Documents/AiFlex3Dump/`，`list` 拿 `relativePath`，再用 `sandbox_read` 分段取（单次 ≤512KiB）。
 - `dump` 导出的 Mach-O **不带有效签名，只能静态分析，不能安装运行**；`complete:false` 必须如实上报。
 
-### 5.5 `aiflex_hook`（需 hook，当前现场关闭）
+### 5.6 `aiflex_hook`（需 hook，当前现场关闭）
 
 ```
 status / list / hook / unhook / events / clear / patch / restore / selftest
@@ -253,7 +307,7 @@ invoke_method(selector=..., arguments=[...]) → object_info(id=returnId)
 
 ```
 aiflex_read(sandbox_list) → aiflex_sensitive(sandbox_read, path=..., tail=true) / sandbox_grep
-aiflex_read(network_list) → aiflex_sensitive(network_detail, id=...)
+aiflex_read(network_list) → aiflex_sensitive(network_detail, id=...)   （请求参数字段见 §5.4）
 ```
 
 **从崩溃裸地址走到函数体**
