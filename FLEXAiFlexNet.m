@@ -288,6 +288,272 @@ static NSData *NXBodyFromArguments(NSDictionary *arguments) {
                              error:(NSString **)error;
 @end
 
+// swizzle 助手：原方法可能定义在父类上，这时 class_getInstanceMethod 能拿到
+// Method，但直接 method_exchangeImplementations 会改错地方，必须先试 addMethod。
+static void NXSwizzleInstance(Class cls, SEL original, SEL replacement, BOOL *ok) {
+    Method from = class_getInstanceMethod(cls, original);
+    Method to = class_getInstanceMethod(cls, replacement);
+    if (!from || !to) { if (ok) *ok = NO; return; }
+    BOOL added = class_addMethod(cls, original,
+                                 method_getImplementation(to),
+                                 method_getTypeEncoding(to));
+    if (added) {
+        class_replaceMethod(cls, replacement,
+                            method_getImplementation(from),
+                            method_getTypeEncoding(from));
+    } else {
+        method_exchangeImplementations(from, to);
+    }
+    if (ok) *ok = YES;
+}
+
+#pragma mark - TLS fishhook 符号表
+
+// 原始函数指针必须在使用之前定义：installTLSHooks 里要取它们的地址作为
+// rebinding 的输出位置。函数实体放在文件末尾，避免这里被上百行 C 代码打断节奏。
+typedef int (*NXOpenSSLWriteFn)(void *, const void *, int);
+typedef int (*NXOpenSSLWriteExFn)(void *, const void *, size_t, size_t *);
+typedef int (*NXOpenSSLReadFn)(void *, void *, int);
+typedef int (*NXOpenSSLReadExFn)(void *, void *, size_t, size_t *);
+typedef OSStatus (*NXSTWriteFn)(void *, const void *, size_t, size_t *);
+typedef OSStatus (*NXSTReadFn)(void *, void *, size_t, size_t *);
+
+static NXOpenSSLWriteFn orig_SSL_write;
+static NXOpenSSLWriteExFn orig_SSL_write_ex;
+static NXOpenSSLReadFn orig_SSL_read;
+static NXOpenSSLReadExFn orig_SSL_read_ex;
+static NXSTWriteFn orig_SSLWrite;
+static NXSTReadFn orig_SSLRead;
+
+static int nx_SSL_write(void *ssl, const void *buf, int num);
+static int nx_SSL_write_ex(void *ssl, const void *buf, size_t num, size_t *written);
+static int nx_SSL_read(void *ssl, void *buf, int num);
+static int nx_SSL_read_ex(void *ssl, void *buf, size_t num, size_t *readbytes);
+static OSStatus nx_SSLWrite(void *ctx, const void *data, size_t len, size_t *written);
+static OSStatus nx_SSLRead(void *ctx, void *data, size_t len, size_t *read);
+
+#pragma mark - socket hook
+
+// socket 层不做内容解析：绝大多数流量到这里已经是 TLS 密文，记字节没有意义。
+// 这里只解决一个 FLEX 完全看不见的问题——「这个 App 到底连了谁」：
+//   getaddrinfo  域名 → IP
+//   connect      fd → IP:port
+//   send         首次见到 0x16 0x03 时解析 ClientHello 里的 SNI
+// 所以 SNI 能在不解密的前提下补上「真实域名」，比只看到 IP 有用得多。
+
+typedef struct {
+    int fd;
+    char host[256];
+    char sni[256];
+    BOOL used;
+} NXSocketSlot;
+
+static NXSocketSlot gNXSockets[96];
+static os_unfair_lock gNXSocketLock = OS_UNFAIR_LOCK_INIT;
+
+static int (*orig_connect)(int, const struct sockaddr *, socklen_t);
+static ssize_t (*orig_send)(int, const void *, size_t, int);
+static int (*orig_getaddrinfo)(const char *, const char *, const struct addrinfo *, struct addrinfo **);
+
+static NXSocketSlot *NXSocketSlotFor(int fd, BOOL create) {
+    os_unfair_lock_lock(&gNXSocketLock);
+    NXSocketSlot *slot = NULL;
+    for (int i = 0; i < 96; i++) {
+        if (gNXSockets[i].used && gNXSockets[i].fd == fd) { slot = &gNXSockets[i]; break; }
+    }
+    if (!slot && create) {
+        for (int i = 0; i < 96; i++) {
+            if (!gNXSockets[i].used) {
+                memset(&gNXSockets[i], 0, sizeof(NXSocketSlot));
+                gNXSockets[i].used = YES;
+                gNXSockets[i].fd = fd;
+                slot = &gNXSockets[i];
+                break;
+            }
+        }
+        if (!slot) {   // 表满：整体清空重来，比逐条 LRU 简单且够用
+            memset(gNXSockets, 0, sizeof(gNXSockets));
+            gNXSockets[0].used = YES;
+            gNXSockets[0].fd = fd;
+            slot = &gNXSockets[0];
+        }
+    }
+    os_unfair_lock_unlock(&gNXSocketLock);
+    return slot;
+}
+
+// TLS ClientHello 的 SNI 扩展解析。结构是固定偏移的：
+//   record(5) + handshake header(4) + version(2) + random(32) + session_id(1+n)
+//   + cipher_suites(2+n) + compression(1+n) + extensions(2+n)
+// 任何一处越界都直接放弃，绝不读越界内存。
+static NSString *NXParseSNI(const uint8_t *bytes, size_t length) {
+    if (length < 48) return nil;
+    if (bytes[0] != 0x16 || bytes[1] != 0x03) return nil;   // 只认 TLS handshake
+    if (bytes[5] != 0x01) return nil;                        // 只认 ClientHello
+    size_t pos = 9;                                          // 跳过 handshake header
+    pos += 2;                                                // client version
+    pos += 32;                                               // random
+    if (pos >= length) return nil;
+    pos += 1 + (size_t)bytes[pos];                           // session id
+    if (pos + 2 > length) return nil;
+    size_t ciphers = ((size_t)bytes[pos] << 8) | bytes[pos + 1];
+    pos += 2 + ciphers;
+    if (pos >= length) return nil;
+    pos += 1 + (size_t)bytes[pos];                           // compression methods
+    if (pos + 2 > length) return nil;
+    size_t extTotal = ((size_t)bytes[pos] << 8) | bytes[pos + 1];
+    pos += 2;
+    size_t extEnd = MIN(pos + extTotal, length);
+    while (pos + 4 <= extEnd) {
+        uint16_t type = (uint16_t)((bytes[pos] << 8) | bytes[pos + 1]);
+        uint16_t extLen = (uint16_t)((bytes[pos + 2] << 8) | bytes[pos + 3]);
+        pos += 4;
+        if (pos + extLen > extEnd) break;
+        if (type == 0x0000 && extLen > 5) {
+            size_t cursor = pos + 2;                          // server_name_list length
+            if (cursor + 3 <= pos + extLen && bytes[cursor] == 0x00) {
+                size_t nameLen = ((size_t)bytes[cursor + 1] << 8) | bytes[cursor + 2];
+                cursor += 3;
+                if (cursor + nameLen <= pos + extLen) {
+                    NSString *name = [[NSString alloc] initWithBytes:bytes + cursor
+                                                              length:nameLen
+                                                            encoding:NSUTF8StringEncoding];
+                    if (name.length) return name;
+                }
+            }
+        }
+        pos += extLen;
+    }
+    return nil;
+}
+
+static NSString *NXAddressText(const struct sockaddr *address) {
+    if (!address) return @"";
+    char buffer[INET6_ADDRSTRLEN] = {0};
+    if (address->sa_family == AF_INET) {
+        const struct sockaddr_in *v4 = (const struct sockaddr_in *)address;
+        inet_ntop(AF_INET, &v4->sin_addr, buffer, sizeof(buffer));
+        return [NSString stringWithFormat:@"%s:%d", buffer, ntohs(v4->sin_port)];
+    }
+    if (address->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *v6 = (const struct sockaddr_in6 *)address;
+        inet_ntop(AF_INET6, &v6->sin6_addr, buffer, sizeof(buffer));
+        return [NSString stringWithFormat:@"[%s]:%d", buffer, ntohs(v6->sin6_port)];
+    }
+    return @"";
+}
+
+static int nx_connect(int fd, const struct sockaddr *address, socklen_t length) {
+    if (!orig_connect) { errno = ENOSYS; return -1; }
+    int result = orig_connect(fd, address, length);
+    if ([[FLEXAiFlexNet sharedEngine] captureSocket]) {
+        NSString *text = NXAddressText(address);
+        if (text.length) {
+            NXSocketSlot *slot = NXSocketSlotFor(fd, YES);
+            if (slot) {
+                snprintf(slot->host, sizeof(slot->host), "%s", text.UTF8String);
+            }
+            [[FLEXAiFlexNet sharedEngine] recordSocketEvent:(result == 0 ? @"connect" : @"connect-failed")
+                                                       host:text
+                                                       note:(result == 0 ? @"连接建立" : @"连接失败")];
+        }
+    }
+    return result;
+}
+
+// 线程局部快路标：同一条 fd 解析出 SNI 后就不再重复走解析。
+static _Thread_local int gNXLastSNIFd = -1;
+static _Thread_local BOOL gNXLastSNIDone = NO;
+
+static ssize_t nx_send(int fd, const void *buffer, size_t length, int flags) {
+    if (!orig_send) { errno = ENOSYS; return -1; }
+    // 高频路径上先做两个字节的判断：不是 TLS 握手就完全不碰锁、不碰引擎。
+    // 之前这里无条件查表，普通业务 send 每次都要抢一把 os_unfair_lock。
+    if (buffer && length > 48 && !(gNXLastSNIDone && gNXLastSNIFd == fd)) {
+        const uint8_t *bytes = buffer;
+        if (bytes[0] == 0x16 && bytes[1] == 0x03 && [[FLEXAiFlexNet sharedEngine] captureSocket]) {
+            NXSocketSlot *slot = NXSocketSlotFor(fd, NO);
+            if (slot && !slot->sni[0]) {
+                NSString *sni = NXParseSNI(bytes, length);
+                if (sni.length) {
+                    snprintf(slot->sni, sizeof(slot->sni), "%s", sni.UTF8String);
+                    gNXLastSNIFd = fd;
+                    gNXLastSNIDone = YES;
+                    [[FLEXAiFlexNet sharedEngine] recordSocketEvent:@"tls-hello"
+                                                               host:sni
+                                                               note:[NSString stringWithFormat:
+                                                                     @"从 ClientHello 解析出 SNI（不解密；对端 %s）",
+                                                                     slot->host[0] ? slot->host : "?"]];
+                }
+            }
+        }
+    }
+    return orig_send(fd, buffer, length, flags);
+}
+
+static int nx_getaddrinfo(const char *node, const char *service,
+                          const struct addrinfo *hints, struct addrinfo **result) {
+    if (!orig_getaddrinfo) return EAI_FAIL;
+    int status = orig_getaddrinfo(node, service, hints, result);
+    if (status == 0 && node && [[FLEXAiFlexNet sharedEngine] captureSocket]) {
+        NSString *host = [NSString stringWithUTF8String:node];
+        NSString *address = @"";
+        if (result && *result) address = NXAddressText((*result)->ai_addr);
+        if (host.length) {
+            [[FLEXAiFlexNet sharedEngine] recordSocketEvent:@"dns"
+                                                       host:host
+                                                       note:[NSString stringWithFormat:@"解析到 %@（service=%@）",
+                                                             address.length ? address : @"?",
+                                                             service ? [NSString stringWithUTF8String:service] : @"-"]];
+        }
+    }
+    return status;
+}
+
+#pragma mark - TLS 明文重组
+
+// 这一层是「自带 TLS 栈 App 的唯一可读入口」。BoringSSL / SecureTransport 解密后
+// 的明文都会经过 SSL_write / SSL_read，所以在这里能拿到完整 HTTP 报文。
+//
+// 但它拿到的是字节流，不是消息：一个 write 可能是半个 header，也可能三条请求粘在
+// 一起。所以必须做按连接、按方向的重组，否则记录会碎成一堆无意义的片段。
+
+@interface NXTLSSession : NSObject
+@property (nonatomic) uint64_t key;
+@property (nonatomic, strong) NSMutableData *incoming;
+@property (nonatomic, strong) NSMutableData *outgoing;
+@property (nonatomic, copy) NSString *host;
+@property (nonatomic, copy) NSString *layer;
+@end
+
+@implementation NXTLSSession
+- (instancetype)init {
+    if ((self = [super init])) {
+        _incoming = [NSMutableData data];
+        _outgoing = [NSMutableData data];
+    }
+    return self;
+}
+@end
+
+// 解析结果：一条完整的 HTTP 报文。
+@interface NXHTTPMessage : NSObject
+@property (nonatomic, copy) NSString *firstLine;
+@property (nonatomic, strong) NSDictionary *headers;
+@property (nonatomic, strong) NSData *body;
+@property (nonatomic) BOOL truncated;
+@property (nonatomic) BOOL incomplete;
+@property (nonatomic) NSUInteger consumed;
+@end
+
+@implementation NXHTTPMessage
+@end
+
+// TLS 连接表：key 是 SSL* / SSLContextRef 指针。放这里而不是放进
+// category 实现里——C 静态变量只能定义在文件作用域。
+static NSMutableDictionary<NSNumber *, NXTLSSession *> *gNXTLSSessions;
+static os_unfair_lock gNXTLSLock = OS_UNFAIR_LOCK_INIT;
+
 @implementation FLEXAiFlexNet
 
 + (instancetype)sharedEngine {
@@ -781,29 +1047,6 @@ static NSData *NXBodyFromArguments(NSDictionary *arguments) {
     return effective;
 }
 
-@end
-
-// swizzle 助手：原方法可能定义在父类上，这时 class_getInstanceMethod 能拿到
-// Method，但直接 method_exchangeImplementations 会改错地方，必须先试 addMethod。
-static void NXSwizzleInstance(Class cls, SEL original, SEL replacement, BOOL *ok) {
-    Method from = class_getInstanceMethod(cls, original);
-    Method to = class_getInstanceMethod(cls, replacement);
-    if (!from || !to) { if (ok) *ok = NO; return; }
-    BOOL added = class_addMethod(cls, original,
-                                 method_getImplementation(to),
-                                 method_getTypeEncoding(to));
-    if (added) {
-        class_replaceMethod(cls, replacement,
-                            method_getImplementation(from),
-                            method_getTypeEncoding(from));
-    } else {
-        method_exchangeImplementations(from, to);
-    }
-    if (ok) *ok = YES;
-}
-
-@implementation FLEXAiFlexNet
-
 #pragma mark - 安装 hook
 
 - (void)installHooksIfNeeded {
@@ -855,227 +1098,6 @@ static void NXSwizzleInstance(Class cls, SEL original, SEL replacement, BOOL *ok
     return newData ?: NSData.data;
 }
 
-@end
-
-#pragma mark - NSURLSession hook
-
-@interface NSURLSession (AiFlex3NetHook)
-- (NSURLSessionDataTask *)nx_dataTaskWithRequest:(NSURLRequest *)request
-                               completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionDataTask *)nx_dataTaskWithRequest:(NSURLRequest *)request;
-- (NSURLSessionUploadTask *)nx_uploadTaskWithRequest:(NSURLRequest *)request
-                                            fromData:(NSData *)bodyData
-                                   completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionUploadTask *)nx_uploadTaskWithRequest:(NSURLRequest *)request
-                                            fromFile:(NSURL *)fileURL
-                                   completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionDownloadTask *)nx_downloadTaskWithRequest:(NSURLRequest *)request
-                                       completionHandler:(void (^)(NSURL *location, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionDownloadTask *)nx_downloadTaskWithRequest:(NSURLRequest *)request;
-@end
-
-static const void *NXTaskIdentKey = &NXTaskIdentKey;
-
-@implementation NSURLSession (AiFlex3NetHook)
-
-- (NSURLSessionDataTask *)nx_dataTaskWithRequest:(NSURLRequest *)request
-                               completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
-    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
-    if (!engine.captureNSURL) return [self nx_dataTaskWithRequest:request completionHandler:completionHandler];
-
-    NSDictionary *rule = [engine firstRuleForRequest:request];
-    NXRecord *record = nil;
-    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:nil recordOut:&record];
-    if (!effective) return nil;   // 被规则 drop
-
-    void (^wrapped)(NSData *, NSURLResponse *, NSError *) = nil;
-    if (completionHandler) {
-        NSString *ident = record.ident;
-        wrapped = ^(NSData *data, NSURLResponse *response, NSError *error) {
-            NSData *finalData = data;
-            NSURLResponse *finalResponse = response;
-            if (rule && [rule[@"action"] isEqual:@"rewrite"]) {
-                finalData = [engine rewriteResponseData:data response:&finalResponse rule:rule];
-            }
-            [engine finishRecordIdent:ident data:finalData response:finalResponse error:error];
-            completionHandler(finalData, finalResponse, error);
-        };
-    } else if (record) {
-        record.note = [record.note stringByAppendingString:
-                       @" 走 delegate 回调路径：本记录只有请求侧，响应体请看 FLEX 自己的网络记录。"];
-    }
-
-    NSURLSessionDataTask *task = [self nx_dataTaskWithRequest:effective completionHandler:wrapped];
-    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    return task;
-}
-
-- (NSURLSessionDataTask *)nx_dataTaskWithRequest:(NSURLRequest *)request {
-    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
-    if (!engine.captureNSURL) return [self nx_dataTaskWithRequest:request];
-    NXRecord *record = nil;
-    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:nil recordOut:&record];
-    if (!effective) return nil;
-    NSURLSessionDataTask *task = [self nx_dataTaskWithRequest:effective];
-    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    return task;
-}
-
-- (NSURLSessionUploadTask *)nx_uploadTaskWithRequest:(NSURLRequest *)request
-                                            fromData:(NSData *)bodyData
-                                   completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
-    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
-    if (!engine.captureNSURL) return [self nx_uploadTaskWithRequest:request fromData:bodyData completionHandler:completionHandler];
-
-    NSDictionary *rule = [engine firstRuleForRequest:request];
-    NXRecord *record = nil;
-    // fromData 是最可靠的 body 来源：request.HTTPBody 在 upload 场景里经常是 nil。
-    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:bodyData recordOut:&record];
-    if (!effective) return nil;
-
-    void (^wrapped)(NSData *, NSURLResponse *, NSError *) = nil;
-    if (completionHandler) {
-        NSString *ident = record.ident;
-        wrapped = ^(NSData *data, NSURLResponse *response, NSError *error) {
-            NSData *finalData = data;
-            NSURLResponse *finalResponse = response;
-            if (rule && [rule[@"action"] isEqual:@"rewrite"]) {
-                finalData = [engine rewriteResponseData:data response:&finalResponse rule:rule];
-            }
-            [engine finishRecordIdent:ident data:finalData response:finalResponse error:error];
-            completionHandler(finalData, finalResponse, error);
-        };
-    }
-    NSURLSessionUploadTask *task = [self nx_uploadTaskWithRequest:effective fromData:bodyData completionHandler:wrapped];
-    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    return task;
-}
-
-- (NSURLSessionUploadTask *)nx_uploadTaskWithRequest:(NSURLRequest *)request
-                                            fromFile:(NSURL *)fileURL
-                                   completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
-    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
-    if (!engine.captureNSURL) return [self nx_uploadTaskWithRequest:request fromFile:fileURL completionHandler:completionHandler];
-
-    NSDictionary *rule = [engine firstRuleForRequest:request];
-    // 上传文件只读前 64 KiB 做样本：整个文件可能有几百 MB，读进来会直接 OOM。
-    NSData *sample = nil;
-    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:fileURL.path ?: @""];
-    if (handle) {
-        NSData *head = [handle readDataOfLength:NXBodyStoreMax];
-        [handle closeFile];
-        sample = head;
-    }
-    NXRecord *record = nil;
-    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:sample recordOut:&record];
-    if (!effective) return nil;
-    if (sample && record) {
-        unsigned long long total = [[[NSFileManager defaultManager] attributesOfItemAtPath:fileURL.path ?: @""
-                                                                                    error:nil] fileSize];
-        record.requestBytes = (NSUInteger)total;
-        if (total > sample.length) record.requestBodyTruncated = YES;
-        record.note = [record.note stringByAppendingFormat:
-                       @" 上传文件 %@（%llu 字节），body 只保留前 %lu 字节。",
-                       fileURL.lastPathComponent ?: @"?", total, (unsigned long)sample.length];
-    }
-
-    void (^wrapped)(NSData *, NSURLResponse *, NSError *) = nil;
-    if (completionHandler) {
-        NSString *ident = record.ident;
-        wrapped = ^(NSData *data, NSURLResponse *response, NSError *error) {
-            NSURLResponse *finalResponse = response;
-            NSData *finalData = data;
-            if (rule && [rule[@"action"] isEqual:@"rewrite"]) {
-                finalData = [engine rewriteResponseData:data response:&finalResponse rule:rule];
-            }
-            [engine finishRecordIdent:ident data:finalData response:finalResponse error:error];
-            completionHandler(finalData, finalResponse, error);
-        };
-    }
-    NSURLSessionUploadTask *task = [self nx_uploadTaskWithRequest:effective fromFile:fileURL completionHandler:wrapped];
-    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    return task;
-}
-
-- (NSURLSessionDownloadTask *)nx_downloadTaskWithRequest:(NSURLRequest *)request
-                                       completionHandler:(void (^)(NSURL *, NSURLResponse *, NSError *))completionHandler {
-    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
-    if (!engine.captureNSURL) return [self nx_downloadTaskWithRequest:request completionHandler:completionHandler];
-
-    NXRecord *record = nil;
-    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:nil recordOut:&record];
-    if (!effective) return nil;
-
-    void (^wrapped)(NSURL *, NSURLResponse *, NSError *) = nil;
-    if (completionHandler) {
-        NSString *ident = record.ident;
-        wrapped = ^(NSURL *location, NSURLResponse *response, NSError *error) {
-            NSData *preview = nil;
-            if (location.path.length) {
-                NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:location.path];
-                if (handle) {
-                    preview = [handle readDataOfLength:NXBodyStoreMax];
-                    [handle closeFile];
-                }
-            }
-            [engine finishRecordIdent:ident data:preview response:response error:error];
-            if (preview) {
-                NXRecord *saved = [engine recordForIdent:ident];
-                if (saved) {
-                    saved.note = [saved.note stringByAppendingFormat:
-                                  @" 下载任务落地文件 %@，响应体只保留前 %lu 字节预览。",
-                                  location.lastPathComponent ?: @"?", (unsigned long)preview.length];
-                }
-            }
-            completionHandler(location, response, error);
-        };
-    }
-    NSURLSessionDownloadTask *task = [self nx_downloadTaskWithRequest:effective completionHandler:wrapped];
-    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    return task;
-}
-
-- (NSURLSessionDownloadTask *)nx_downloadTaskWithRequest:(NSURLRequest *)request {
-    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
-    if (!engine.captureNSURL) return [self nx_downloadTaskWithRequest:request];
-    NXRecord *record = nil;
-    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:nil recordOut:&record];
-    if (!effective) return nil;
-    NSURLSessionDownloadTask *task = [self nx_downloadTaskWithRequest:effective];
-    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    return task;
-}
-
-@end
-
-@interface NSURLSessionTask (AiFlex3NetHook)
-- (void)nx_resume;
-@end
-
-@implementation NSURLSessionTask (AiFlex3NetHook)
-
-// resume 是最后的兜底：App 可能通过 NSURLSession 的便利方法之外的方式造任务
-// （比如从 background session 恢复），那些任务没经过上面的创建方法。
-// 已经关联过 ident 的直接放过，不重复记录。
-- (void)nx_resume {
-    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
-    NSString *existing = objc_getAssociatedObject(self, NXTaskIdentKey);
-    if (!existing && engine.captureNSURL && self.originalRequest) {
-        NXRecord *record = nil;
-        [engine prepareRequest:self.originalRequest layer:@"nsurl-delegate" requestBody:nil recordOut:&record];
-        if (record) {
-            // prepareRequest 已经把记录追加进去了，这里只补一句来源说明。
-            [engine markDelegatePathForIdent:record.ident];
-            objc_setAssociatedObject(self, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        }
-    }
-    [self nx_resume];
-}
-
-@end
-
-@implementation FLEXAiFlexNet
-
 - (void)markDelegatePathForIdent:(NSString *)ident {
     NXRecord *record = [self recordForIdent:ident];
     if (!record) return;
@@ -1102,40 +1124,6 @@ static const void *NXTaskIdentKey = &NXTaskIdentKey;
     NXSwizzleInstance(NSClassFromString(@"NSURLSessionTask"), @selector(resume),
                       @selector(nx_resume), &ok);
 }
-
-@end
-
-#pragma mark - WebSocket hook
-
-@interface NSURLSessionWebSocketTask (AiFlex3NetHook)
-- (void)nx_sendMessage:(id)message completionHandler:(void (^)(NSError *error))completionHandler;
-- (void)nx_receiveMessageWithCompletionHandler:(void (^)(id message, NSError *error))completionHandler;
-@end
-
-@implementation NSURLSessionWebSocketTask (AiFlex3NetHook)
-
-- (void)nx_sendMessage:(id)message completionHandler:(void (^)(NSError *))completionHandler {
-    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
-    if (engine.captureWS) [engine recordWebSocketMessage:message outgoing:YES url:self.originalRequest.URL];
-    [self nx_sendMessage:message completionHandler:completionHandler];
-}
-
-- (void)nx_receiveMessageWithCompletionHandler:(void (^)(id, NSError *))completionHandler {
-    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
-    if (!engine.captureWS) {
-        [self nx_receiveMessageWithCompletionHandler:completionHandler];
-        return;
-    }
-    NSURL *url = self.originalRequest.URL;
-    [self nx_receiveMessageWithCompletionHandler:^(id message, NSError *error) {
-        if (message) [engine recordWebSocketMessage:message outgoing:NO url:url];
-        if (completionHandler) completionHandler(message, error);
-    }];
-}
-
-@end
-
-@implementation FLEXAiFlexNet (WebSocketRecord)
 
 - (void)recordWebSocketMessage:(id)message outgoing:(BOOL)outgoing url:(NSURL *)url {
     if (!message) return;
@@ -1187,79 +1175,6 @@ static const void *NXTaskIdentKey = &NXTaskIdentKey;
     NXSwizzleInstance(task, @selector(receiveMessageWithCompletionHandler:),
                       @selector(nx_receiveMessageWithCompletionHandler:), &ok);
 }
-
-@end
-
-#pragma mark - TLS fishhook 符号表
-
-// 原始函数指针必须在使用之前定义：installTLSHooks 里要取它们的地址作为
-// rebinding 的输出位置。函数实体放在文件末尾，避免这里被上百行 C 代码打断节奏。
-typedef int (*NXOpenSSLWriteFn)(void *, const void *, int);
-typedef int (*NXOpenSSLWriteExFn)(void *, const void *, size_t, size_t *);
-typedef int (*NXOpenSSLReadFn)(void *, void *, int);
-typedef int (*NXOpenSSLReadExFn)(void *, void *, size_t, size_t *);
-typedef OSStatus (*NXSTWriteFn)(void *, const void *, size_t, size_t *);
-typedef OSStatus (*NXSTReadFn)(void *, void *, size_t, size_t *);
-
-static NXOpenSSLWriteFn orig_SSL_write;
-static NXOpenSSLWriteExFn orig_SSL_write_ex;
-static NXOpenSSLReadFn orig_SSL_read;
-static NXOpenSSLReadExFn orig_SSL_read_ex;
-static NXSTWriteFn orig_SSLWrite;
-static NXSTReadFn orig_SSLRead;
-
-static int nx_SSL_write(void *ssl, const void *buf, int num);
-static int nx_SSL_write_ex(void *ssl, const void *buf, size_t num, size_t *written);
-static int nx_SSL_read(void *ssl, void *buf, int num);
-static int nx_SSL_read_ex(void *ssl, void *buf, size_t num, size_t *readbytes);
-static OSStatus nx_SSLWrite(void *ctx, const void *data, size_t len, size_t *written);
-static OSStatus nx_SSLRead(void *ctx, void *data, size_t len, size_t *read);
-
-#pragma mark - TLS 明文重组
-
-// 这一层是「自带 TLS 栈 App 的唯一可读入口」。BoringSSL / SecureTransport 解密后
-// 的明文都会经过 SSL_write / SSL_read，所以在这里能拿到完整 HTTP 报文。
-//
-// 但它拿到的是字节流，不是消息：一个 write 可能是半个 header，也可能三条请求粘在
-// 一起。所以必须做按连接、按方向的重组，否则记录会碎成一堆无意义的片段。
-
-@interface NXTLSSession : NSObject
-@property (nonatomic) uint64_t key;
-@property (nonatomic, strong) NSMutableData *incoming;
-@property (nonatomic, strong) NSMutableData *outgoing;
-@property (nonatomic, copy) NSString *host;
-@property (nonatomic, copy) NSString *layer;
-@end
-
-@implementation NXTLSSession
-- (instancetype)init {
-    if ((self = [super init])) {
-        _incoming = [NSMutableData data];
-        _outgoing = [NSMutableData data];
-    }
-    return self;
-}
-@end
-
-// 解析结果：一条完整的 HTTP 报文。
-@interface NXHTTPMessage : NSObject
-@property (nonatomic, copy) NSString *firstLine;
-@property (nonatomic, strong) NSDictionary *headers;
-@property (nonatomic, strong) NSData *body;
-@property (nonatomic) BOOL truncated;
-@property (nonatomic) BOOL incomplete;
-@property (nonatomic) NSUInteger consumed;
-@end
-
-@implementation NXHTTPMessage
-@end
-
-// TLS 连接表：key 是 SSL* / SSLContextRef 指针。放这里而不是放进
-// category 实现里——C 静态变量只能定义在文件作用域。
-static NSMutableDictionary<NSNumber *, NXTLSSession *> *gNXTLSSessions;
-static os_unfair_lock gNXTLSLock = OS_UNFAIR_LOCK_INIT;
-
-@implementation FLEXAiFlexNet (TLS)
 
 - (NXTLSSession *)tlsSessionForContext:(const void *)context layer:(NSString *)layer {
     uint64_t key = (uint64_t)(uintptr_t)context;
@@ -1548,257 +1463,12 @@ static os_unfair_lock gNXTLSLock = OS_UNFAIR_LOCK_INIT;
             if (strstr(name, "/System/") || strstr(name, "/usr/lib/")) continue;
             const struct mach_header *header = _dyld_get_image_header(i);
             if (!header) continue;
-            flex_rebind_symbols_image((void *)header, bindings, count);
+            flex_rebind_symbols_image((void *)header,
+                                      (intptr_t)_dyld_get_image_vmaddr_slide(i),
+                                      bindings, count);
         }
     });
 }
-
-@end
-
-#pragma mark - TLS hook 实现
-
-// 三个约束：
-//   1. 先进原函数，再按真实返回值记录。失败时 buf 里的内容根本没发出去，
-//      记了就是假数据。
-//   2. 每次都要 @autoreleasepool：这些函数可能被高频调用，不建池会把
-//      autorelease 对象堆到线程池弹出为止。
-//   3. 绝不修改数据、绝不返回值篡改。这一层只读。
-
-static void NXForwardTLS(const void *context, const void *buffer, size_t length,
-                         BOOL outgoing, NSString *layer) {
-    if (!buffer || !length) return;
-    @autoreleasepool {
-        NSData *data = [NSData dataWithBytes:buffer length:MIN(length, NXStreamMax)];
-        [[FLEXAiFlexNet sharedEngine] recordTLSData:data
-                                            context:context
-                                           outgoing:outgoing
-                                              layer:layer];
-    }
-}
-
-static int nx_SSL_write(void *ssl, const void *buf, int num) {
-    if (!orig_SSL_write) return -1;
-    int written = orig_SSL_write(ssl, buf, num);
-    if (written > 0) NXForwardTLS(ssl, buf, (size_t)written, YES, @"openssl");
-    return written;
-}
-
-static int nx_SSL_write_ex(void *ssl, const void *buf, size_t num, size_t *written) {
-    if (!orig_SSL_write_ex) return 0;
-    int ok = orig_SSL_write_ex(ssl, buf, num, written);
-    if (ok == 1 && written && *written > 0) NXForwardTLS(ssl, buf, *written, YES, @"openssl");
-    return ok;
-}
-
-static int nx_SSL_read(void *ssl, void *buf, int num) {
-    if (!orig_SSL_read) return -1;
-    int got = orig_SSL_read(ssl, buf, num);
-    if (got > 0) NXForwardTLS(ssl, buf, (size_t)got, NO, @"openssl");
-    return got;
-}
-
-static int nx_SSL_read_ex(void *ssl, void *buf, size_t num, size_t *readbytes) {
-    if (!orig_SSL_read_ex) return 0;
-    int ok = orig_SSL_read_ex(ssl, buf, num, readbytes);
-    if (ok == 1 && readbytes && *readbytes > 0) NXForwardTLS(ssl, buf, *readbytes, NO, @"openssl");
-    return ok;
-}
-
-static OSStatus nx_SSLWrite(void *ctx, const void *data, size_t len, size_t *written) {
-    if (!orig_SSLWrite) return -1;
-    OSStatus status = orig_SSLWrite(ctx, data, len, written);
-    if (status == 0 && written && *written > 0) NXForwardTLS(ctx, data, *written, YES, @"securetransport");
-    return status;
-}
-
-static OSStatus nx_SSLRead(void *ctx, void *data, size_t len, size_t *read) {
-    if (!orig_SSLRead) return -1;
-    OSStatus status = orig_SSLRead(ctx, data, len, read);
-    // SecureTransport 读完最后一段会返回 errSSLWouldBlock，但 read 里已经有数据，
-    // 这种情况必须照样记，否则尾部报文会丢。
-    if (read && *read > 0) NXForwardTLS(ctx, data, *read, NO, @"securetransport");
-    return status;
-}
-
-#pragma mark - socket hook
-
-// socket 层不做内容解析：绝大多数流量到这里已经是 TLS 密文，记字节没有意义。
-// 这里只解决一个 FLEX 完全看不见的问题——「这个 App 到底连了谁」：
-//   getaddrinfo  域名 → IP
-//   connect      fd → IP:port
-//   send         首次见到 0x16 0x03 时解析 ClientHello 里的 SNI
-// 所以 SNI 能在不解密的前提下补上「真实域名」，比只看到 IP 有用得多。
-
-typedef struct {
-    int fd;
-    char host[256];
-    char sni[256];
-    BOOL used;
-} NXSocketSlot;
-
-static NXSocketSlot gNXSockets[96];
-static os_unfair_lock gNXSocketLock = OS_UNFAIR_LOCK_INIT;
-
-static int (*orig_connect)(int, const struct sockaddr *, socklen_t);
-static ssize_t (*orig_send)(int, const void *, size_t, int);
-static int (*orig_getaddrinfo)(const char *, const char *, const struct addrinfo *, struct addrinfo **);
-
-static NXSocketSlot *NXSocketSlotFor(int fd, BOOL create) {
-    os_unfair_lock_lock(&gNXSocketLock);
-    NXSocketSlot *slot = NULL;
-    for (int i = 0; i < 96; i++) {
-        if (gNXSockets[i].used && gNXSockets[i].fd == fd) { slot = &gNXSockets[i]; break; }
-    }
-    if (!slot && create) {
-        for (int i = 0; i < 96; i++) {
-            if (!gNXSockets[i].used) {
-                memset(&gNXSockets[i], 0, sizeof(NXSocketSlot));
-                gNXSockets[i].used = YES;
-                gNXSockets[i].fd = fd;
-                slot = &gNXSockets[i];
-                break;
-            }
-        }
-        if (!slot) {   // 表满：整体清空重来，比逐条 LRU 简单且够用
-            memset(gNXSockets, 0, sizeof(gNXSockets));
-            gNXSockets[0].used = YES;
-            gNXSockets[0].fd = fd;
-            slot = &gNXSockets[0];
-        }
-    }
-    os_unfair_lock_unlock(&gNXSocketLock);
-    return slot;
-}
-
-// TLS ClientHello 的 SNI 扩展解析。结构是固定偏移的：
-//   record(5) + handshake header(4) + version(2) + random(32) + session_id(1+n)
-//   + cipher_suites(2+n) + compression(1+n) + extensions(2+n)
-// 任何一处越界都直接放弃，绝不读越界内存。
-static NSString *NXParseSNI(const uint8_t *bytes, size_t length) {
-    if (length < 48) return nil;
-    if (bytes[0] != 0x16 || bytes[1] != 0x03) return nil;   // 只认 TLS handshake
-    if (bytes[5] != 0x01) return nil;                        // 只认 ClientHello
-    size_t pos = 9;                                          // 跳过 handshake header
-    pos += 2;                                                // client version
-    pos += 32;                                               // random
-    if (pos >= length) return nil;
-    pos += 1 + (size_t)bytes[pos];                           // session id
-    if (pos + 2 > length) return nil;
-    size_t ciphers = ((size_t)bytes[pos] << 8) | bytes[pos + 1];
-    pos += 2 + ciphers;
-    if (pos >= length) return nil;
-    pos += 1 + (size_t)bytes[pos];                           // compression methods
-    if (pos + 2 > length) return nil;
-    size_t extTotal = ((size_t)bytes[pos] << 8) | bytes[pos + 1];
-    pos += 2;
-    size_t extEnd = MIN(pos + extTotal, length);
-    while (pos + 4 <= extEnd) {
-        uint16_t type = (uint16_t)((bytes[pos] << 8) | bytes[pos + 1]);
-        uint16_t extLen = (uint16_t)((bytes[pos + 2] << 8) | bytes[pos + 3]);
-        pos += 4;
-        if (pos + extLen > extEnd) break;
-        if (type == 0x0000 && extLen > 5) {
-            size_t cursor = pos + 2;                          // server_name_list length
-            if (cursor + 3 <= pos + extLen && bytes[cursor] == 0x00) {
-                size_t nameLen = ((size_t)bytes[cursor + 1] << 8) | bytes[cursor + 2];
-                cursor += 3;
-                if (cursor + nameLen <= pos + extLen) {
-                    NSString *name = [[NSString alloc] initWithBytes:bytes + cursor
-                                                              length:nameLen
-                                                            encoding:NSUTF8StringEncoding];
-                    if (name.length) return name;
-                }
-            }
-        }
-        pos += extLen;
-    }
-    return nil;
-}
-
-static NSString *NXAddressText(const struct sockaddr *address) {
-    if (!address) return @"";
-    char buffer[INET6_ADDRSTRLEN] = {0};
-    if (address->sa_family == AF_INET) {
-        const struct sockaddr_in *v4 = (const struct sockaddr_in *)address;
-        inet_ntop(AF_INET, &v4->sin_addr, buffer, sizeof(buffer));
-        return [NSString stringWithFormat:@"%s:%d", buffer, ntohs(v4->sin_port)];
-    }
-    if (address->sa_family == AF_INET6) {
-        const struct sockaddr_in6 *v6 = (const struct sockaddr_in6 *)address;
-        inet_ntop(AF_INET6, &v6->sin6_addr, buffer, sizeof(buffer));
-        return [NSString stringWithFormat:@"[%s]:%d", buffer, ntohs(v6->sin6_port)];
-    }
-    return @"";
-}
-
-static int nx_connect(int fd, const struct sockaddr *address, socklen_t length) {
-    if (!orig_connect) { errno = ENOSYS; return -1; }
-    int result = orig_connect(fd, address, length);
-    if ([[FLEXAiFlexNet sharedEngine] captureSocket]) {
-        NSString *text = NXAddressText(address);
-        if (text.length) {
-            NXSocketSlot *slot = NXSocketSlotFor(fd, YES);
-            if (slot) {
-                snprintf(slot->host, sizeof(slot->host), "%s", text.UTF8String);
-            }
-            [[FLEXAiFlexNet sharedEngine] recordSocketEvent:(result == 0 ? @"connect" : @"connect-failed")
-                                                       host:text
-                                                       note:(result == 0 ? @"连接建立" : @"连接失败")];
-        }
-    }
-    return result;
-}
-
-// 线程局部快路标：同一条 fd 解析出 SNI 后就不再重复走解析。
-static _Thread_local int gNXLastSNIFd = -1;
-static _Thread_local BOOL gNXLastSNIDone = NO;
-
-static ssize_t nx_send(int fd, const void *buffer, size_t length, int flags) {
-    if (!orig_send) { errno = ENOSYS; return -1; }
-    // 高频路径上先做两个字节的判断：不是 TLS 握手就完全不碰锁、不碰引擎。
-    // 之前这里无条件查表，普通业务 send 每次都要抢一把 os_unfair_lock。
-    if (buffer && length > 48 && !(gNXLastSNIDone && gNXLastSNIFd == fd)) {
-        const uint8_t *bytes = buffer;
-        if (bytes[0] == 0x16 && bytes[1] == 0x03 && [[FLEXAiFlexNet sharedEngine] captureSocket]) {
-            NXSocketSlot *slot = NXSocketSlotFor(fd, NO);
-            if (slot && !slot->sni[0]) {
-                NSString *sni = NXParseSNI(bytes, length);
-                if (sni.length) {
-                    snprintf(slot->sni, sizeof(slot->sni), "%s", sni.UTF8String);
-                    gNXLastSNIFd = fd;
-                    gNXLastSNIDone = YES;
-                    [[FLEXAiFlexNet sharedEngine] recordSocketEvent:@"tls-hello"
-                                                               host:sni
-                                                               note:[NSString stringWithFormat:
-                                                                     @"从 ClientHello 解析出 SNI（不解密；对端 %s）",
-                                                                     slot->host[0] ? slot->host : "?"]];
-                }
-            }
-        }
-    }
-    return orig_send(fd, buffer, length, flags);
-}
-
-static int nx_getaddrinfo(const char *node, const char *service,
-                          const struct addrinfo *hints, struct addrinfo **result) {
-    if (!orig_getaddrinfo) return EAI_FAIL;
-    int status = orig_getaddrinfo(node, service, hints, result);
-    if (status == 0 && node && [[FLEXAiFlexNet sharedEngine] captureSocket]) {
-        NSString *host = [NSString stringWithUTF8String:node];
-        NSString *address = @"";
-        if (result && *result) address = NXAddressText((*result)->ai_addr);
-        if (host.length) {
-            [[FLEXAiFlexNet sharedEngine] recordSocketEvent:@"dns"
-                                                       host:host
-                                                       note:[NSString stringWithFormat:@"解析到 %@（service=%@）",
-                                                             address.length ? address : @"?",
-                                                             service ? [NSString stringWithUTF8String:service] : @"-"]];
-        }
-    }
-    return status;
-}
-
-@implementation FLEXAiFlexNet
 
 - (void)installSocketHooks {
     static dispatch_once_t once;
@@ -2368,3 +2038,313 @@ static int nx_getaddrinfo(const char *node, const char *service,
 }
 
 @end
+
+#pragma mark - NSURLSession hook
+
+@interface NSURLSession (AiFlex3NetHook)
+- (NSURLSessionDataTask *)nx_dataTaskWithRequest:(NSURLRequest *)request
+                               completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
+- (NSURLSessionDataTask *)nx_dataTaskWithRequest:(NSURLRequest *)request;
+- (NSURLSessionUploadTask *)nx_uploadTaskWithRequest:(NSURLRequest *)request
+                                            fromData:(NSData *)bodyData
+                                   completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
+- (NSURLSessionUploadTask *)nx_uploadTaskWithRequest:(NSURLRequest *)request
+                                            fromFile:(NSURL *)fileURL
+                                   completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
+- (NSURLSessionDownloadTask *)nx_downloadTaskWithRequest:(NSURLRequest *)request
+                                       completionHandler:(void (^)(NSURL *location, NSURLResponse *response, NSError *error))completionHandler;
+- (NSURLSessionDownloadTask *)nx_downloadTaskWithRequest:(NSURLRequest *)request;
+@end
+
+static const void *NXTaskIdentKey = &NXTaskIdentKey;
+
+@implementation NSURLSession (AiFlex3NetHook)
+
+- (NSURLSessionDataTask *)nx_dataTaskWithRequest:(NSURLRequest *)request
+                               completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
+    if (!engine.captureNSURL) return [self nx_dataTaskWithRequest:request completionHandler:completionHandler];
+
+    NSDictionary *rule = [engine firstRuleForRequest:request];
+    NXRecord *record = nil;
+    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:nil recordOut:&record];
+    if (!effective) return nil;   // 被规则 drop
+
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) = nil;
+    if (completionHandler) {
+        NSString *ident = record.ident;
+        wrapped = ^(NSData *data, NSURLResponse *response, NSError *error) {
+            NSData *finalData = data;
+            NSURLResponse *finalResponse = response;
+            if (rule && [rule[@"action"] isEqual:@"rewrite"]) {
+                finalData = [engine rewriteResponseData:data response:&finalResponse rule:rule];
+            }
+            [engine finishRecordIdent:ident data:finalData response:finalResponse error:error];
+            completionHandler(finalData, finalResponse, error);
+        };
+    } else if (record) {
+        record.note = [record.note stringByAppendingString:
+                       @" 走 delegate 回调路径：本记录只有请求侧，响应体请看 FLEX 自己的网络记录。"];
+    }
+
+    NSURLSessionDataTask *task = [self nx_dataTaskWithRequest:effective completionHandler:wrapped];
+    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return task;
+}
+
+- (NSURLSessionDataTask *)nx_dataTaskWithRequest:(NSURLRequest *)request {
+    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
+    if (!engine.captureNSURL) return [self nx_dataTaskWithRequest:request];
+    NXRecord *record = nil;
+    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:nil recordOut:&record];
+    if (!effective) return nil;
+    NSURLSessionDataTask *task = [self nx_dataTaskWithRequest:effective];
+    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return task;
+}
+
+- (NSURLSessionUploadTask *)nx_uploadTaskWithRequest:(NSURLRequest *)request
+                                            fromData:(NSData *)bodyData
+                                   completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
+    if (!engine.captureNSURL) return [self nx_uploadTaskWithRequest:request fromData:bodyData completionHandler:completionHandler];
+
+    NSDictionary *rule = [engine firstRuleForRequest:request];
+    NXRecord *record = nil;
+    // fromData 是最可靠的 body 来源：request.HTTPBody 在 upload 场景里经常是 nil。
+    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:bodyData recordOut:&record];
+    if (!effective) return nil;
+
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) = nil;
+    if (completionHandler) {
+        NSString *ident = record.ident;
+        wrapped = ^(NSData *data, NSURLResponse *response, NSError *error) {
+            NSData *finalData = data;
+            NSURLResponse *finalResponse = response;
+            if (rule && [rule[@"action"] isEqual:@"rewrite"]) {
+                finalData = [engine rewriteResponseData:data response:&finalResponse rule:rule];
+            }
+            [engine finishRecordIdent:ident data:finalData response:finalResponse error:error];
+            completionHandler(finalData, finalResponse, error);
+        };
+    }
+    NSURLSessionUploadTask *task = [self nx_uploadTaskWithRequest:effective fromData:bodyData completionHandler:wrapped];
+    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return task;
+}
+
+- (NSURLSessionUploadTask *)nx_uploadTaskWithRequest:(NSURLRequest *)request
+                                            fromFile:(NSURL *)fileURL
+                                   completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
+    if (!engine.captureNSURL) return [self nx_uploadTaskWithRequest:request fromFile:fileURL completionHandler:completionHandler];
+
+    NSDictionary *rule = [engine firstRuleForRequest:request];
+    // 上传文件只读前 64 KiB 做样本：整个文件可能有几百 MB，读进来会直接 OOM。
+    NSData *sample = nil;
+    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:fileURL.path ?: @""];
+    if (handle) {
+        NSData *head = [handle readDataOfLength:NXBodyStoreMax];
+        [handle closeFile];
+        sample = head;
+    }
+    NXRecord *record = nil;
+    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:sample recordOut:&record];
+    if (!effective) return nil;
+    if (sample && record) {
+        unsigned long long total = [[[NSFileManager defaultManager] attributesOfItemAtPath:fileURL.path ?: @""
+                                                                                    error:nil] fileSize];
+        record.requestBytes = (NSUInteger)total;
+        if (total > sample.length) record.requestBodyTruncated = YES;
+        record.note = [record.note stringByAppendingFormat:
+                       @" 上传文件 %@（%llu 字节），body 只保留前 %lu 字节。",
+                       fileURL.lastPathComponent ?: @"?", total, (unsigned long)sample.length];
+    }
+
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) = nil;
+    if (completionHandler) {
+        NSString *ident = record.ident;
+        wrapped = ^(NSData *data, NSURLResponse *response, NSError *error) {
+            NSURLResponse *finalResponse = response;
+            NSData *finalData = data;
+            if (rule && [rule[@"action"] isEqual:@"rewrite"]) {
+                finalData = [engine rewriteResponseData:data response:&finalResponse rule:rule];
+            }
+            [engine finishRecordIdent:ident data:finalData response:finalResponse error:error];
+            completionHandler(finalData, finalResponse, error);
+        };
+    }
+    NSURLSessionUploadTask *task = [self nx_uploadTaskWithRequest:effective fromFile:fileURL completionHandler:wrapped];
+    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return task;
+}
+
+- (NSURLSessionDownloadTask *)nx_downloadTaskWithRequest:(NSURLRequest *)request
+                                       completionHandler:(void (^)(NSURL *, NSURLResponse *, NSError *))completionHandler {
+    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
+    if (!engine.captureNSURL) return [self nx_downloadTaskWithRequest:request completionHandler:completionHandler];
+
+    NXRecord *record = nil;
+    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:nil recordOut:&record];
+    if (!effective) return nil;
+
+    void (^wrapped)(NSURL *, NSURLResponse *, NSError *) = nil;
+    if (completionHandler) {
+        NSString *ident = record.ident;
+        wrapped = ^(NSURL *location, NSURLResponse *response, NSError *error) {
+            NSData *preview = nil;
+            if (location.path.length) {
+                NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:location.path];
+                if (handle) {
+                    preview = [handle readDataOfLength:NXBodyStoreMax];
+                    [handle closeFile];
+                }
+            }
+            [engine finishRecordIdent:ident data:preview response:response error:error];
+            if (preview) {
+                NXRecord *saved = [engine recordForIdent:ident];
+                if (saved) {
+                    saved.note = [saved.note stringByAppendingFormat:
+                                  @" 下载任务落地文件 %@，响应体只保留前 %lu 字节预览。",
+                                  location.lastPathComponent ?: @"?", (unsigned long)preview.length];
+                }
+            }
+            completionHandler(location, response, error);
+        };
+    }
+    NSURLSessionDownloadTask *task = [self nx_downloadTaskWithRequest:effective completionHandler:wrapped];
+    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return task;
+}
+
+- (NSURLSessionDownloadTask *)nx_downloadTaskWithRequest:(NSURLRequest *)request {
+    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
+    if (!engine.captureNSURL) return [self nx_downloadTaskWithRequest:request];
+    NXRecord *record = nil;
+    NSURLRequest *effective = [engine prepareRequest:request layer:@"nsurl" requestBody:nil recordOut:&record];
+    if (!effective) return nil;
+    NSURLSessionDownloadTask *task = [self nx_downloadTaskWithRequest:effective];
+    if (record.ident) objc_setAssociatedObject(task, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return task;
+}
+
+@end
+
+@interface NSURLSessionTask (AiFlex3NetHook)
+- (void)nx_resume;
+@end
+
+@implementation NSURLSessionTask (AiFlex3NetHook)
+
+// resume 是最后的兜底：App 可能通过 NSURLSession 的便利方法之外的方式造任务
+// （比如从 background session 恢复），那些任务没经过上面的创建方法。
+// 已经关联过 ident 的直接放过，不重复记录。
+- (void)nx_resume {
+    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
+    NSString *existing = objc_getAssociatedObject(self, NXTaskIdentKey);
+    if (!existing && engine.captureNSURL && self.originalRequest) {
+        NXRecord *record = nil;
+        [engine prepareRequest:self.originalRequest layer:@"nsurl-delegate" requestBody:nil recordOut:&record];
+        if (record) {
+            // prepareRequest 已经把记录追加进去了，这里只补一句来源说明。
+            [engine markDelegatePathForIdent:record.ident];
+            objc_setAssociatedObject(self, NXTaskIdentKey, record.ident, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        }
+    }
+    [self nx_resume];
+}
+
+@end
+
+@interface NSURLSessionWebSocketTask (AiFlex3NetHook)
+- (void)nx_sendMessage:(id)message completionHandler:(void (^)(NSError *error))completionHandler;
+- (void)nx_receiveMessageWithCompletionHandler:(void (^)(id message, NSError *error))completionHandler;
+@end
+
+@implementation NSURLSessionWebSocketTask (AiFlex3NetHook)
+
+- (void)nx_sendMessage:(id)message completionHandler:(void (^)(NSError *))completionHandler {
+    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
+    if (engine.captureWS) [engine recordWebSocketMessage:message outgoing:YES url:self.originalRequest.URL];
+    [self nx_sendMessage:message completionHandler:completionHandler];
+}
+
+- (void)nx_receiveMessageWithCompletionHandler:(void (^)(id, NSError *))completionHandler {
+    FLEXAiFlexNet *engine = [FLEXAiFlexNet sharedEngine];
+    if (!engine.captureWS) {
+        [self nx_receiveMessageWithCompletionHandler:completionHandler];
+        return;
+    }
+    NSURL *url = self.originalRequest.URL;
+    [self nx_receiveMessageWithCompletionHandler:^(id message, NSError *error) {
+        if (message) [engine recordWebSocketMessage:message outgoing:NO url:url];
+        if (completionHandler) completionHandler(message, error);
+    }];
+}
+
+@end
+
+#pragma mark - TLS hook 实现
+
+// 三个约束：
+//   1. 先进原函数，再按真实返回值记录。失败时 buf 里的内容根本没发出去，
+//      记了就是假数据。
+//   2. 每次都要 @autoreleasepool：这些函数可能被高频调用，不建池会把
+//      autorelease 对象堆到线程池弹出为止。
+//   3. 绝不修改数据、绝不返回值篡改。这一层只读。
+
+static void NXForwardTLS(const void *context, const void *buffer, size_t length,
+                         BOOL outgoing, NSString *layer) {
+    if (!buffer || !length) return;
+    @autoreleasepool {
+        NSData *data = [NSData dataWithBytes:buffer length:MIN(length, NXStreamMax)];
+        [[FLEXAiFlexNet sharedEngine] recordTLSData:data
+                                            context:context
+                                           outgoing:outgoing
+                                              layer:layer];
+    }
+}
+
+static int nx_SSL_write(void *ssl, const void *buf, int num) {
+    if (!orig_SSL_write) return -1;
+    int written = orig_SSL_write(ssl, buf, num);
+    if (written > 0) NXForwardTLS(ssl, buf, (size_t)written, YES, @"openssl");
+    return written;
+}
+
+static int nx_SSL_write_ex(void *ssl, const void *buf, size_t num, size_t *written) {
+    if (!orig_SSL_write_ex) return 0;
+    int ok = orig_SSL_write_ex(ssl, buf, num, written);
+    if (ok == 1 && written && *written > 0) NXForwardTLS(ssl, buf, *written, YES, @"openssl");
+    return ok;
+}
+
+static int nx_SSL_read(void *ssl, void *buf, int num) {
+    if (!orig_SSL_read) return -1;
+    int got = orig_SSL_read(ssl, buf, num);
+    if (got > 0) NXForwardTLS(ssl, buf, (size_t)got, NO, @"openssl");
+    return got;
+}
+
+static int nx_SSL_read_ex(void *ssl, void *buf, size_t num, size_t *readbytes) {
+    if (!orig_SSL_read_ex) return 0;
+    int ok = orig_SSL_read_ex(ssl, buf, num, readbytes);
+    if (ok == 1 && readbytes && *readbytes > 0) NXForwardTLS(ssl, buf, *readbytes, NO, @"openssl");
+    return ok;
+}
+
+static OSStatus nx_SSLWrite(void *ctx, const void *data, size_t len, size_t *written) {
+    if (!orig_SSLWrite) return -1;
+    OSStatus status = orig_SSLWrite(ctx, data, len, written);
+    if (status == 0 && written && *written > 0) NXForwardTLS(ctx, data, *written, YES, @"securetransport");
+    return status;
+}
+
+static OSStatus nx_SSLRead(void *ctx, void *data, size_t len, size_t *read) {
+    if (!orig_SSLRead) return -1;
+    OSStatus status = orig_SSLRead(ctx, data, len, read);
+    // SecureTransport 读完最后一段会返回 errSSLWouldBlock，但 read 里已经有数据，
+    // 这种情况必须照样记，否则尾部报文会丢。
+    if (read && *read > 0) NXForwardTLS(ctx, data, *read, NO, @"securetransport");
+    return status;
+}
