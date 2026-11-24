@@ -13,15 +13,17 @@
 
 | 维度 | 数量 |
 |---|---|
-| MCP 工具 | 10 个 |
-| MCP operation | 93 个（read 28 / sensitive 9 / control 20 / script 1 / trace 4 / frida 11 / disasm 7 / dump 4 / hook 9） |
-| 授权组 | 6 组（read 始终开；sensitive / control / script / tracing / hook 默认关；`aiflex_frida`、`aiflex_disasm`、`aiflex_dump` 挂在 sensitive 下，`aiflex_hook` 独占 hook 组） |
+| MCP 工具 | 12 个 |
+| MCP operation | 109 个（read 28 / sensitive 9+8 / control 20+8 / script 1 / trace 4 / frida 11 / disasm 7 / dump 4 / hook 9） |
+| 授权组 | 6 组（read 始终开；sensitive / control / script / tracing / hook 默认关；`aiflex_frida`、`aiflex_disasm`、`aiflex_dump`、`aiflex_net` 挂在 sensitive 下，`aiflex_hook` 独占 hook 组，`aiflex_net_action` 挂 control——用它改包/重放前先确认 control 已开） |
 | 真实触摸手势 | 7 种 |
 | FLEX 原生工具入口 | 全部 FLEX globals 行 + `extension.headers` + `extension.disassembly` |
 | 原生层只读观测 | frida-gum（模块/符号/线程/内存区间/内存读/特征扫描/回调栈/崩溃记录） |
 | 机器码分析 | capstone 6.0（AArch64 反汇编 / 函数边界 / CFG / 交叉引用 / 符号化，含 A19 Pro 的 SME2 / SVE2p1 / MTE4） |
 | 二进制导出 | Mach-O 内存导出（按 segment 搬明文、`cryptid` 置零） |
 | 代码改写 | frida-gum Interceptor（inline hook / 字节补丁 / 逐条还原 / 参数抓取） |
+| 网络抓包 | 六层：NSURLSession 全家族 / WebSocket 帧 / OpenSSL / SecureTransport / BSD socket+SNI |
+| 流量改写 | rewrite 规则 / hold 断点 / drop 阻断 / replay 重放 / compose 构造 |
 
 ### 0.2 十二个工具
 
