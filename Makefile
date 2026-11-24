@@ -137,6 +137,18 @@ $(LIBRARY_NAME)_LDFLAGS += $(CAPSTONE6_LIB)
 $(info [AiFlex3] capstone6 enabled: $(CAPSTONE6_LIB))
 endif
 
+# FLEXAiFlexNet 的 @implementation 被切成多段：中间夹着 swizzle 助手、fishhook
+# 符号表和七个 category。方法全都实现了，只是不在同一段里——链接后方法表完整，
+# 运行时行为与单段实现完全一致。clang 的 -Wincomplete-implementation 是按每段
+# 单独判「类上声明的方法有没有落地」，对分段写法会误报，所以在这里关掉这条诊断。
+# 它是诊断不是功能：真缺实现时链接期会出 undefined symbol，不会静默。
+$(LIBRARY_NAME)_CFLAGS += -Wno-incomplete-implementation
+$(LIBRARY_NAME)_OBJCFLAGS += -Wno-incomplete-implementation
+# SecureTransport 的 SSLWrite / SSLRead 在 iOS 13 起标了 deprecated，但那是
+# 「建议改用 Network.framework」的意思，函数本身仍可用——抓自带 TLS 栈的 App
+# 恰恰只能靠这两个入口。降级成警告，不让它挡住构建。
+$(LIBRARY_NAME)_CFLAGS += -Wno-error=deprecated-declarations
+
 include $(THEOS)/makefiles/common.mk
 include $(THEOS_MAKE_PATH)/library.mk
 

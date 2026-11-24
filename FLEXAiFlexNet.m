@@ -135,26 +135,6 @@ static uint64_t NXNowNs(void) {
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-static NSString *NXHexBytes(const uint8_t *bytes, NSUInteger length) {
-    NSMutableString *text = [NSMutableString stringWithCapacity:length * 2];
-    for (NSUInteger i = 0; i < length; i++) [text appendFormat:@"%02x", bytes[i]];
-    return text;
-}
-
-static NSData *NXParseHex(NSString *text) {
-    if (![text isKindOfClass:NSString.class] || !text.length) return nil;
-    NSCharacterSet *sep = [NSCharacterSet characterSetWithCharactersInString:@" \t,:-_"];
-    NSMutableData *data = [NSMutableData data];
-    for (NSString *token in [text componentsSeparatedByCharactersInSet:sep]) {
-        if (token.length != 2) continue;
-        unsigned int byte = 0;
-        if (![[NSScanner scannerWithString:token] scanHexInt:&byte]) return nil;
-        uint8_t value = (uint8_t)byte;
-        [data appendBytes:&value length:1];
-    }
-    return data.length ? data : nil;
-}
-
 // body 有两种传法：文本走 body，二进制走 body_base64（base64 优先）。
 // 空字符串是一个合法值（表示"把 body 清成空"），所以不做长度判断。
 static NSData *NXBodyFromArguments(NSDictionary *arguments) {
