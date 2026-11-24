@@ -1,9 +1,9 @@
 # AiFlex3 MCP 能力说明（供 AI Agent 阅读）
 
-> 适用版本：AiFlex3 **3.1.0**（2026-11-23）。包标识 `com.hoko20.aiflex3`，产物 `FLEX++-3.1.0-arm64-rootless.dylib`。
-> 本文档描述运行在宿主 App 进程内的 AiFlex3 MCP 服务。把本文件交给任意支持 MCP 的 AI，即可按这里的约定调用。
+> 适用版本：AiFlex3 **3.5.2**（2026-11-24）。包标识 `com.hoko20.aiflex3`，产物 `AiFlex2-FLEX++-3.5.2-arm64-rootless.dylib`（另有 `-unsigned` 变体供 LiveContainer）。
+> 本文档描述运行在宿主 App 进程内的 AiFlex3 MCP 服务。把本文件交给任意支持 MCP 的 AI，即可按这里的约定调用；只想快速上手连/调的，先看 [`MCP-QUICKSTART.md`](MCP-QUICKSTART.md)。
 > 3.0.0 起**只保留 MCP 这一条对外通道**：原「同机 AiFlex2 App 轮询（:8787）」与「宿主内 AI 聊天界面」已整体移除，仓库更名为 AiFlex3。
-> 3.1.0 新增 `aiflex_frida`：基于 frida-gum 的**只读**原生观测（模块/符号/线程/内存区间/内存读/特征扫描/调用栈/崩溃记录），不做 inline hook、不写内存、不打补丁。
+> 3.1.0 新增 `aiflex_frida`（只读原生观测）；3.2.0 新增 `aiflex_disasm` / `aiflex_dump`；3.3.0 新增 `aiflex_hook`（唯一写类工具）；3.5.0 的 `aiflex_disasm` 升级 capstone 6.0（A19 Pro SME2/SVE2p1/MTE4）；3.5.1 MCP 默认地址改局域网 IP；3.5.2 产物加 AiFlex2 前缀并附 unsigned 变体。
 
 ---
 
