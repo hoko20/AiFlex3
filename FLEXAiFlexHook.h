@@ -48,6 +48,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// 「注入到长驻进程 + 用户忘记 unhook」的场景下能少留一份残局。
 - (void)teardownSynchronously;
 
+/// 按单调时钟区间取事件快照，供网络引擎做「请求 ↔ 原生调用」时间对齐。
+/// 与 events operation 的区别：这个是同步的、按时间过滤而不是按 seq 游标，
+/// 因为网络侧拿到的是时间戳而不是事件序号。时间单位是纳秒，和
+/// clock_gettime(CLOCK_MONOTONIC) 一致。未编入 gum 时返回空数组。
++ (NSArray<NSDictionary *> *)snapshotEventsFrom:(uint64_t)startNs
+                                             to:(uint64_t)endNs
+                                          limit:(NSUInteger)limit;
+
 @end
 
 NS_ASSUME_NONNULL_END

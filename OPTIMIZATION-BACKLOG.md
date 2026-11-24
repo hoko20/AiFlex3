@@ -30,13 +30,12 @@
 - **成本**：低。改动局限在一个函数，可加纯 C 单测覆盖分块/截断/超限三种输入。
 - **价值**：中。兼容性补强。
 
-### 3. 抓包看不到自定义请求头
+### 3. 抓包看不到自定义请求头 —— ✅ 3.6.0 已解决（超出原方案）
 
 - **证据**：`FLEXAiFlexRuntime.m:1332` 只取 `Content-Type` 一个头字段，`network_detail` 没有 headers 字段。
 - **影响**：现在很多 App 把签名、token、设备指纹放在 `X-Sign` / `Authorization` / `X-Device-Id` 里，这些参数 AI 完全看不到，抓包能力残半。
-- **改法**：`network_detail` 增 `requestHeaders` / `responseHeaders` 字典，复用 `DXShort` 做单值截断（如 512 字符/值、总 8 KiB）；整条记录仍归 sensitive 组，不新增开关。同步更新 `MCP-CAPABILITIES.md` 与 `MCP-QUICKSTART.md` 的字段表。
-- **成本**：低。
-- **价值**：中高。与 recently 补的 §5.4 请求参数说明直接配套。
+- **实际做法**：没有去改 FLEX 的 `network_detail`（那条路的天花板不只是请求头），而是新增独立引擎 `FLEXAiFlexNet`：`aiflex_net` 提供全量 `requestHeaders` / `responseHeaders`、`HTTPBodyStream` 诚实标注、WebSocket 帧、自带 TLS 栈明文、socket/SNI、HAR 导出、请求↔hook 事件对齐；`aiflex_net_action` 补上改包 / 断点 / 重放 / 构造请求。原 FLEX 的 `network_detail` 保留不动，作为轻量入口。
+- **状态**：已完成，见 `MCP-CAPABILITIES.md` §22 与 `MCP-QUICKSTART.md` §5.5 / §5.6。
 
 ---
 

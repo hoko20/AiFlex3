@@ -4,10 +4,10 @@
 
 ```
 包标识   com.hoko20.aiflex3
-版本     3.5.2
-产物     AiFlex2-FLEX++-3.5.2-arm64-rootless.dylib              （ldid 假签名，越狱注入）
-        AiFlex2-FLEX++-3.5.2-arm64-rootless-unsigned.dylib      （无签名，LiveContainer 用）
-        com.hoko20.aiflex3_3.5.2_iphoneos-arm64.deb
+版本     3.6.0
+产物     AiFlex2-FLEX++-3.6.0-arm64-rootless.dylib              （ldid 假签名，越狱注入）
+        AiFlex2-FLEX++-3.6.0-arm64-rootless-unsigned.dylib      （无签名，LiveContainer 用）
+        com.hoko20.aiflex3_3.6.0_iphoneos-arm64.deb
 目标     iOS 15.0+ / arm64 / 越狱（rootless，安装到 /var/jb）或 LiveContainer 侧载
 构建     Theos library，ldid 假签名（unsigned 变体除外）
 ```
@@ -26,7 +26,7 @@
 | `x/AppProtection` | 给调试面板自己上锁（`LAContext` 人脸/密码 + 时间码 + 计算器伪装），防止别人拿到手机就能翻数据 |
 | `x/filza` | 文件管理入口，含 Mach-O load commands 查看 |
 
-**MCP operation 层**：93 个 operation 归一到一个分发点，覆盖 observe / control / sensitive / script / trace / frida / disasm / dump / hook 九组。要让一个 AI 会话立刻会连、会调，把 [`MCP-QUICKSTART.md`](MCP-QUICKSTART.md) 全文喂给它即可（连接参数 + 十工具速查 + 调用规则 + 工作流，自包含）；operation 级完整契约见 [`MCP-CAPABILITIES.md`](MCP-CAPABILITIES.md)。
+**MCP operation 层**：109 个 operation 归一到一个分发点，覆盖 observe / control / sensitive / script / trace / frida / disasm / dump / hook / net / net_action 十一组。要让一个 AI 会话立刻会连、会调，把 [`MCP-QUICKSTART.md`](MCP-QUICKSTART.md) 全文喂给它即可（连接参数 + 十二工具速查 + 调用规则 + 工作流，自包含）；operation 级完整契约见 [`MCP-CAPABILITIES.md`](MCP-CAPABILITIES.md)。
 
 **原生层只读观测（`aiflex_frida`，基于 frida-gum）**：模块与符号枚举（`modules` / `exports` / `imports`）、地址与符号互查（`resolve`）、线程列表（`threads`）、主线程符号化调用栈（`backtrace`）、映射区间（`memory_ranges`）、分页校验的内存读（`read_mem`，hex/utf8/u32/u64/ptr）、特征码扫描（`scan`，`??` 通配、4 秒预算）、崩溃记录（`crash_log`）。**只读**：不做 inline hook、不写内存、不打补丁、不开 Stalker。构建时没有 `frida/vendor` 会自动降级，不影响出包。
 
@@ -36,16 +36,18 @@
 
 **真实触摸注入**：`IOHIDEventCreateDigitizerEvent` + `UITouch` 私有 setter，tap / double_tap / long_press / swipe / drag / pinch / rotate。
 
+**网络抓包与改写（`aiflex_net` / `aiflex_net_action`）**：FLEX 自带的 `FLEXNetworkRecorder` 只有 NSURLSession/NSURLConnection 一层，且只给 `Content-Type`。3.6.0 补的引擎分六层采集：`nsurl`（全量请求头 + 请求体建任务瞬间快照 + 全量响应头体，覆盖 data/upload/download 的 block 与 delegate 两条路径）、`ws`（WebSocket 帧明文）、`openssl`（fishhook `SSL_write`/`SSL_read`/`*_ex`，看自带 BoringSSL 的 App）、`securetransport`（`SSLWrite`/`SSLRead`）、`socket`（`connect`/`send`/`getaddrinfo` 元数据 + TLS ClientHello 的 SNI，**不解密**）。`HTTPBodyStream` 的请求体**不读**——读流会把 App 的请求体偷走，记录里如实标注抓不到。主动能力在 `aiflex_net_action`：`rule_add` 建 rewrite（改 URL/method/header/body/响应体/状态码）、hold（请求发出前挂起，最长 15 秒，主线程永不阻塞）、drop（不发）；`decide` 放行改动后的请求；`replay` 重发历史请求；`compose` 从零构造。`correlate` 把一条请求和 `aiflex_hook` 同时窗内的事件按 `CLOCK_MONOTONIC` 对齐，用来定位「这个加密参数是哪个函数算的」。
+
 **代码改写（`aiflex_hook`，唯一的写类工具，独占「代码改写」开关）**：inline hook（`hook` / `unhook`，`GumInterceptor` trampoline）、调用记录（`events`，无锁环形缓冲抓 x0-x3 与返回值）、字节补丁（`patch`，只写 4 字节对齐的整指令）、逐条还原（`restore`）、端到端自检（`selftest`，attach `getpid` 真调三次再 detach 验证）。目标可以给地址、`module`+`name` 或 `class`+`selector`（`meta=true` 是类方法）。写入前三重校验（4 字节对齐 / 可执行页 / 非自身镜像），补丁自动备份 + 写后读回 + 不一致自动回滚。**只在本进程有效**：进程结束后 trampoline 与补丁都消失，审计日志只供查看、不自动重放。
 
 ## 2. 安装
 
 ```bash
 # 已构建的 deb
-dpkg -i com.hoko20.aiflex3_3.5.2_iphoneos-arm64.deb
+dpkg -i com.hoko20.aiflex3_3.6.0_iphoneos-arm64.deb
 # 或直接把 dylib 放进
 /var/jb/Library/MobileSubstrate/DynamicLibraries/FLEX++.dylib
-# 即把下载的 AiFlex2-FLEX++-3.5.2-arm64-rootless.dylib 改名为 FLEX++.dylib 后放入
+# 即把下载的 AiFlex2-FLEX++-3.6.0-arm64-rootless.dylib 改名为 FLEX++.dylib 后放入
 ```
 
 装完**重启目标 App**（不是重启桌面），FLEX 悬浮工具条上会出现 **AiFlex3** 按钮，点进去是控制面板。
@@ -88,9 +90,9 @@ LiveContainer 必须用 **unsigned** 那份，而且必须让 LiveContainer 自�
 ```bash
 export THEOS=/opt/theos
 make clean package FINALPACKAGE=1 DEBUG=0 -j1
-# 产物：AiFlex2-FLEX++-3.5.2-arm64-rootless.dylib（签名）
-#       AiFlex2-FLEX++-3.5.2-arm64-rootless-unsigned.dylib（未签名，LiveContainer 用）
-#       com.hoko20.aiflex3_3.5.2_iphoneos-arm64.deb
+# 产物：AiFlex2-FLEX++-3.6.0-arm64-rootless.dylib（签名）
+#       AiFlex2-FLEX++-3.6.0-arm64-rootless-unsigned.dylib（未签名，LiveContainer 用）
+#       com.hoko20.aiflex3_3.6.0_iphoneos-arm64.deb
 ```
 
 CI：`.github/workflows/build.yml`，push 到 `main` 自动在 `macos-latest` 上构建并上传 artifact `AiFlex3`。注意该 workflow 只拉取 Theos 的 `vendor/include`、`vendor/lib` 两个子模块（`vendor/orion` 已私有，不能全量 init）。

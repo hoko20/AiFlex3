@@ -4,7 +4,7 @@
 >
 > 目标：自包含、可照抄。细节大全见同仓库 `MCP-CAPABILITIES.md`（operation 级参数与边界），本文件只负责"连得上、调得动、不踩坑"。
 >
-> 现场快照：2026-11-24 · AiFlex3 3.5.2 · 真机 iOS 26.5.2。
+> 现场快照：2026-11-24 · AiFlex3 3.6.0 · 真机 iOS 26.5.2。
 
 ---
 
@@ -82,7 +82,7 @@ curl -s http://192.168.31.235:8790/mcp \
 
 ---
 
-## 3. 十个工具速查
+## 3. 十二个工具速查
 
 所有工具都是 **`operation` 驱动**，参数与 `operation` 平铺在同一层：
 
@@ -102,6 +102,8 @@ curl -s http://192.168.31.235:8790/mcp \
 | `aiflex_disasm` | sensitive | 7 | AArch64 反汇编、函数 CFG、符号解析、交叉引用、ObjC 方法体 |
 | `aiflex_dump` | sensitive | 4 | 加密镜像的明文 Mach-O 导出（只能静态分析） |
 | `aiflex_hook` | hook | 9 | 唯一写类工具：inline hook、字节补丁、调用抓取、逐条还原、自检 |
+| `aiflex_net` | sensitive | 8 | 六层抓包记录：全量请求头/体、WebSocket、自带 TLS 栈明文、socket/SNI、HAR 导出、请求↔原生调用对齐 |
+| `aiflex_net_action` | control | 8 | 改包（rewrite）、断点（hold/decide）、阻断（drop）、重放、构造请求 |
 
 授权组说明：`read` 恒开；`sensitive` / `control` / `script` / `tracing` / `hook` 各自独立开关，默认全关。`aiflex_frida` / `aiflex_disasm` / `aiflex_dump` 不新增开关，统一挂 `sensitive`（能读进程内存/代码页/导出明文，量级与 `sandbox_read` 同级）。`aiflex_hook` 独占 `hook` 组——它是唯一能改运行中代码的工具。
 
@@ -230,7 +232,90 @@ aiflex_sensitive(network_export)                       ← 导出 HAR 风格 JSO
 5. **`x/Decrypt` 是另一条独立线**：fishhook 打 SSL_get_psk_identity / OpenSSL EVP_* / CommonCrypto 拿更底层明文，落 SQLite；它**不通过 MCP 暴露**（`agentOpenSupported: NO`），只能用 App 内「抓取」UI，且默认不自动装 hook（抓启动流量需打开 `AiFlex3DecryptAutoStart`）。
 6. 抓包前置：`set_network_recording(enabled=true)` 开启记录；`network_detail` / `network_export` 在 sensitive 组，`set_network_recording` 在 control 组，两个开关都要开。
 
-### 5.5 原生分析三件套（需 sensitive）
+### 5.5 新抓包引擎：`aiflex_net`（需 sensitive，只读）
+
+FLEX 自带记录只有一层、只有 `Content-Type`，上面 5.4 的边界说白了就是它的天花板。3.6.0 另做了一套引擎挂在 `aiflex_net`，能补的差距如下：
+
+| 能力 | FLEX 记录 | `aiflex_net` |
+|---|---|---|
+| 请求头 | 只有 `Content-Type` | **全量**（`requestHeaders` + `requestHeaderCount`） |
+| 请求体 | 一次性，无来源区分 | `fromData` 优先 → `HTTPBody` → `HTTPBodyStream` **如实标注抓不到**（绝不读流） |
+| 响应头 | 部分 | 全量 |
+| body 上限 | 16 KiB | 存 64 KiB / 返回 32 KiB |
+| WebSocket | 无 | `ws` 层，收/发各一条 |
+| 自带 TLS 栈 | 盲区 | `openssl` / `securetransport` 层拿解密后明文 |
+| 连接级信息 | 无 | `socket` 层：`connect` / DNS / **ClientHello SNI** |
+| 记录窗口 | 50 | 400 |
+
+```
+aiflex_net: status / list / detail / export / rules / pending / correlate / clear
+```
+
+逐条对照：
+
+- `status` —— 看哪几层开着（`nsurl` / `ws` 默认开，`tls` / `socket` 默认关）、按层记录数、上限。
+- `list` —— 新的在前，支持 `host` `method` `layer` `kind` `status` `query` 过滤，`limit` 1–200，`detail=true` 直接带正文。
+- `detail(id=n12)` —— 全字段 + `har` 片段。注意 `layer` 决定可信度：`nsurl` 是 App 自己的请求，`nsurl-delegate` 只有请求侧，`openssl`/`securetransport` 是 TLS 明文，`socket` 只有元数据。
+- `export` —— HAR 1.2 写到 `Documents/AiFlex3Net/`，返回 `relativePath`，用 `sandbox_read` 取。
+- `correlate(id=n12, window_ms=2000)` —— 把这条请求与 `aiflex_hook` 同窗事件按单调时钟对齐，返回 `hookEvents`（含 `offsetMs`）和 `networkNeighbors`。**这是定位「加密参数谁算的」的正路**：先 hook 候选函数，再重放请求，看事件落在请求前后哪个位置。
+
+打开更深的层：
+
+```json
+{"operation":"capture","target":"tls","enabled":true}
+{"operation":"capture","target":"socket","enabled":true}
+```
+
+`tls` / `socket` 的 hook **装上就卸不掉**（符号重绑没有安全的反向操作），关开关只是让回调不再产生新记录。
+
+### 5.6 改包 / 断点 / 重放 / 构造：`aiflex_net_action`（需 control）
+
+```
+aiflex_net_action: capture / rule_add / rule_remove / rule_clear /
+                   rule_toggle / decide / replay / compose
+```
+
+**改包（rewrite）** —— 命中的请求在发出前被改写：
+
+```json
+{"operation":"rule_add","action":"rewrite",
+ "match":{"host":"api.example.com","path":"/v1/login","method":"POST"},
+ "set":{"headers":{"X-Debug":"1"},"remove_headers":["X-Signature"],
+        "body":"{\"user\":\"test\"}"}}
+```
+
+`match` 的 `host` / `path` / `method` / `url` 都是**包含**语义（不用写全 URL），`url_regex` 走正则。`set` 里 `url` / `method` / `headers` / `remove_headers` / `body` / `body_base64` 改请求；`response_body` / `response_body_base64` / `status` 改响应——**改响应只对 completionHandler 路径生效**，delegate 路径只记录不改，记录里会写明。
+
+**断点（hold + decide）** —— 请求挂住等你决策：
+
+```json
+{"operation":"rule_add","action":"hold","match":{"host":"api.example.com","path":"/v1/order"}}
+{"operation":"pending"}                                     // 看挂起了哪些，带 ageMs
+{"operation":"decide","id":"h1763...","decision":"modify",
+ "set":{"body":"{\"amount\":1}"}}                            // 改完放行
+```
+
+铁律：最长挂 15 秒，超时自动放行；**主线程永不阻塞**（命中时直接放行并在记录里说明），否则 App 建任务的同一个 runloop 会被卡死。
+
+**重放（replay）** —— 重发历史请求，可逐字段覆盖：
+
+```json
+{"operation":"replay","id":"n12"}
+{"operation":"replay","id":"n12","headers":{"Authorization":"Bearer NEW"},"body":"{\"page\":2}"}
+```
+
+**构造（compose）** —— 从零发一条：
+
+```json
+{"operation":"compose","url":"https://api.example.com/v1/check","method":"POST",
+ "headers":{"Content-Type":"application/json"},"body":"{\"token\":\"x\"}","timeout":15}
+```
+
+两者都返回 `status` / `responseHeaders` / `responseBody` / `durationMs`。自己发出的请求也会被记录，但 `note` 里会标 `[本条由 aiflex_net_action 的 replay / compose 主动发出]`——别把自己的流量当成 App 的行为去反推逻辑。
+
+**规则存哪**：`Documents/AiFlex3Net/rules.json`，跨启动保留。规则只在本进程内存里生效，不改磁盘上的 App。
+
+### 5.7 原生分析三件套（需 sensitive）
 
 ```
 aiflex_frida:  status / modules / exports / imports / resolve / threads /
@@ -257,7 +342,7 @@ aiflex_dump:   status / image / dump / list
 - `dump` 落在 `Documents/AiFlex3Dump/`，`list` 拿 `relativePath`，再用 `sandbox_read` 分段取（单次 ≤512KiB）。
 - `dump` 导出的 Mach-O **不带有效签名，只能静态分析，不能安装运行**；`complete:false` 必须如实上报。
 
-### 5.6 `aiflex_hook`（需 hook，当前现场关闭）
+### 5.8 `aiflex_hook`（需 hook，当前现场关闭）
 
 ```
 status / list / hook / unhook / events / clear / patch / restore / selftest
@@ -330,6 +415,10 @@ aiflex_disasm(function, address=...) → aiflex_disasm(xref, address=...)
 | 反编译成类 C 伪代码 | 只有反汇编与 CFG，没有 decompiler |
 | 改函数返回值 / 参数 | `aiflex_hook` 只观测 x0-x3 与返回值，不 replace |
 | 重签名 / 安装导出包 | `aiflex_dump` 产物只能静态分析 |
+| 解密 TLS 密文 | `aiflex_net` 只看得见 App 自己经过 `SSL_write/SSL_read`、`SSLWrite/SSLRead` 的明文；`socket` 层只有元数据与 SNI，绝不解密 |
+| MITM 代理（改系统全局流量） | 是进程内 hook，不是代理；看不到别的 App、看不到不走这些 API 的流量 |
+| HTTP/2 帧级还原 | TLS 层重组出的是字节流，多路复用无法还原成「一请求一响应」，这类流量配对会错位 |
+| 长期落盘抓包 | 记录只在内存（400 条、body 预算 24 MB）；要留存只能 `export` 成 HAR |
 
 `tool_catalog` 返回的 `agentOpenSupported=false` 项（`extension.filza` / `extension.capture` / `extension.protection`）是设计上的硬边界，AI 不能打开。
 
@@ -350,6 +439,6 @@ aiflex_disasm(function, address=...) → aiflex_disasm(xref, address=...)
 
 ## 9. 维护
 
-- 本文档对应 AiFlex3 **3.5.2**（2026-11-24），仓库 https://github.com/hoko20/AiFlex3 。
+- 本文档对应 AiFlex3 **3.6.0**（2026-11-24），仓库 https://github.com/hoko20/AiFlex3 。
 - 连接参数是现场快照；换设备/重装后从手机面板「复制 MCP 客户端配置」更新第 1 节。
 - operation 级完整参数、能力矩阵、变更记录见 `MCP-CAPABILITIES.md`。

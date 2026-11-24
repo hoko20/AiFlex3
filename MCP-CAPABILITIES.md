@@ -23,7 +23,7 @@
 | 二进制导出 | Mach-O 内存导出（按 segment 搬明文、`cryptid` 置零） |
 | 代码改写 | frida-gum Interceptor（inline hook / 字节补丁 / 逐条还原 / 参数抓取） |
 
-### 0.2 十个工具
+### 0.2 十二个工具
 
 | 工具 | 授权 | operation 数 | 能力域 | 详见 |
 |---|---|---|---|---|
@@ -37,6 +37,8 @@
 | `aiflex_disasm` | sensitive | 7 | AArch64 反汇编、函数与 CFG、函数序言扫描、符号双向解析、交叉引用、ObjC 方法体 | §19 |
 | `aiflex_dump` | sensitive | 4 | 已加载镜像枚举、加密状态、明文 Mach-O 导出、导出文件清单 | §20 |
 | `aiflex_hook` | hook | 9 | inline hook、字节补丁、调用记录、逐条还原、端到端自检 | §21 |
+| `aiflex_net` | sensitive | 8 | 六层抓包记录：全量请求头/体、WebSocket 帧、自带 TLS 栈明文、socket 元数据与 SNI、HAR 导出、请求↔原生调用对齐 | §22 |
+| `aiflex_net_action` | control | 8 | 改包（rewrite）、断点（hold+decide）、阻断（drop）、重放（replay）、构造请求（compose） | §22 |
 
 ### 0.3 `aiflex_read` 的 28 个 operation 分组
 
@@ -506,9 +508,9 @@ AiFlex3 是注入到 iOS App 进程内的 FLEX++ 调试运行时，自带一个 
 
 ## 12. 版本
 
-- 文档版本：2026-11-23（AiFlex3 3.3.1）
-- 插件：`com.hoko20.aiflex3` 3.3.1，产物 `FLEX++-3.3.1-arm64-rootless.dylib` / `com.hoko20.aiflex3_3.3.1_iphoneos-arm64.deb`
-- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息、原生层只读观测（模块/符号/内存/线程/调用栈/崩溃）、AArch64 反汇编与 CFG、符号双向解析、交叉引用、ObjC 方法体反汇编、加密镜像明文导出、**inline hook 与字节补丁（含参数抓取、逐条还原、端到端自检）**
+- 文档版本：2026-11-24（AiFlex3 3.6.0）
+- 插件：`com.hoko20.aiflex3` 3.6.0，产物 `AiFlex2-FLEX++-3.6.0-arm64-rootless.dylib` / `AiFlex2-FLEX++-3.6.0-arm64-rootless-unsigned.dylib` / `com.hoko20.aiflex3_3.6.0_iphoneos-arm64.deb`
+- 对应能力：`invoke_method`、`find_instances`、`returnId`、文字查找/点击、对象值读取、网络/日志分析、快照对比、JS 执行、方法追踪、条件等待、滚动查找、控制器栈、环境信息、原生层只读观测（模块/符号/内存/线程/调用栈/崩溃）、AArch64 反汇编与 CFG、符号双向解析、交叉引用、ObjC 方法体反汇编、加密镜像明文导出、inline hook 与字节补丁（含参数抓取、逐条还原、端到端自检）、**六层网络抓包与改包/断点/重放/构造请求**
 - 仓库：https://github.com/hoko20/AiFlex3
 - 自动构建：GitHub Actions `Build AiFlex3`，push 到 `main` 触发，产物以 artifact 形式提供
 
@@ -1366,3 +1368,107 @@ aiflex_hook(list)                                       → calls 字段就是�
 | 想把某条指令改成 `NOP` | `aiflex_hook(patch)` |
 | 想看某个方法的调用频率 | `aiflex_hook(record_args=false)` |
 | 想改方法返回值 | `aiflex_hook(patch)` 改 `mov w0` / `aiflex_trace` 不提供 |
+
+---
+
+## 22. `aiflex_net` / `aiflex_net_action`（3.6.0 网络抓包与改写引擎）
+
+FLEX 自带的 `FLEXNetworkRecorder` 只覆盖 NSURLSession / NSURLConnection 一层，能看到 URL 和 `Content-Type`，但看不到全量请求头、拿不到 `HTTPBodyStream` 承载的请求体、看不到自带 TLS 栈、看不到 WebSocket，更不能改包。3.6.0 新增的 `FLEXAiFlexNet` 引擎补的就是这一块，拆成两个工具：读侧挂 sensitive，写侧挂 control。
+
+### 22.1 六层采集
+
+| layer | hook 点 | 能拿到 | 默认 |
+|---|---|---|---|
+| `nsurl` | `dataTaskWithRequest:completionHandler:` / `dataTaskWithRequest:` / `uploadTaskWithRequest:fromData:` / `uploadTaskWithRequest:fromFile:` / `downloadTaskWithRequest:`（均含 completionHandler 与无 handler 两条） | 全量请求头、请求体（建任务瞬间快照）、全量响应头、响应体、状态码、耗时 | 开 |
+| `nsurl-delegate` | `-[NSURLSessionTask resume]` 兜底 | 只有请求侧；响应体借 FLEX 自己的记录 | 开 |
+| `ws` | `-[NSURLSessionWebSocketTask sendMessage:completionHandler:]` / `receiveMessageWithCompletionHandler:` | WebSocket 帧明文，收/发各一条记录 | 开 |
+| `openssl` | fishhook `SSL_write` / `SSL_write_ex` / `SSL_read` / `SSL_read_ex` | 自带 BoringSSL/OpenSSL 的 App 解密后明文，按连接双向重组 HTTP | 关 |
+| `securetransport` | fishhook `SSLWrite` / `SSLRead` | Apple 系统 TLS 栈的明文 | 关 |
+| `socket` | `connect` / `send` / `getaddrinfo` | 连接元数据、DNS 映射、TLS ClientHello 里的 SNI（**不解密**） | 关 |
+
+开关存在 `NSUserDefaults`：`AiFlex3NetCaptureNSURL` / `AiFlex3NetCaptureWS` / `AiFlex3NetCaptureTLS` / `AiFlex3NetCaptureSocket`。tls 与 socket 默认关闭的原因：两者都要改系统 TLS / BSD socket 的符号绑定，高频 App 上开销明显，且与其它 tweak 抢同一批符号的概率不低。
+
+### 22.2 请求参数：这次是完整的
+
+| 字段 | 来源 | 上限 |
+|---|---|---|
+| `requestHeaders` | `request.allHTTPHeaderFields` 全量 | — |
+| `requestHeaderCount` | 同上，单独给数量 | — |
+| `url` | 完整 URL（含 query） | 2048 字符 |
+| `requestBody` | `fromData` 优先，其次 `HTTPBody` | 存 64 KiB / 返回 32 KiB |
+| `requestBodyTruncated` | 是否被截断 | — |
+| `responseHeaders` | `NSHTTPURLResponse.allHeaderFields` 全量 | — |
+| `responseBody` | completionHandler 的 data / 落地文件前 64 KiB | 存 64 KiB / 返回 32 KiB |
+| `note` | 拿不到时的原因说明 | — |
+
+**`HTTPBodyStream` 的处理**：绝不读流。流只能被消费一次，读掉就等于把请求体从 App 手里偷走，请求会直接坏掉。这种情况记录里写 `请求体由 HTTPBodyStream 承载，抓不到`，`requestBytes` 从 `Content-Length` 兜底，不做「空 body」的假象。
+
+### 22.3 operation 一览
+
+`aiflex_net`（sensitive，只读）：
+
+| operation | 参数 | 说明 |
+|---|---|---|
+| `status` | — | 各层开关、按层记录数、容量与体上限、规则数、挂起数 |
+| `list` | `host` `method` `layer` `kind` `status` `query` `limit` `detail` | 新的在前；`detail=false` 只给头信息 |
+| `detail` | `id` | 单条全字段 + HAR 片段 |
+| `export` | — | 写 HAR 1.2 到 `Documents/AiFlex3Net/`，返回 `relativePath` |
+| `rules` | — | 当前 rewrite/hold/drop 规则 |
+| `pending` | — | 正被断点挂起的请求（含 `ageMs`） |
+| `correlate` | `id` `window_ms` | 把一条请求和同时窗内的 hook 事件对齐 |
+| `clear` | — | 清空记录 |
+
+`aiflex_net_action`（control，会改行为）：
+
+| operation | 参数 | 说明 |
+|---|---|---|
+| `capture` | `target` `enabled` | `all` / `nsurl` / `websocket` / `tls` / `socket` |
+| `rule_add` | `match` `action` `set` `label` | 建规则 |
+| `rule_remove` / `rule_clear` / `rule_toggle` | `id` / — / `id` `enabled` | 管规则 |
+| `decide` | `id` `decision` `set` | 放行 / 改后放行 / 丢弃挂起的请求 |
+| `replay` | `id` 或 `url` `method` `headers` `body` `body_base64` `timeout` | 重发 |
+| `compose` | `url` `method` `headers` `body` `body_base64` `timeout` | 从零构造 |
+
+### 22.4 规则语义
+
+```json
+{
+  "id": "r1", "enabled": true, "action": "rewrite",
+  "match": {"host": "api.example.com", "path": "/v1/login", "method": "POST"},
+  "set": {
+    "headers": {"X-Debug": "1"},
+    "remove_headers": ["X-Signature"],
+    "body": "{\"user\":\"test\"}",
+    "response_body": "{\"code\":0}",
+    "status": 200
+  }
+}
+```
+
+- `match` 五个字段全部是**包含**语义（大小写不敏感），`url_regex` 除外（正则）。不要求写全 URL。
+- `action=rewrite`：`set` 同时管请求和响应。`url` / `method` / `headers` / `remove_headers` / `body` / `body_base64` 改请求；`response_body` / `response_body_base64` / `status` 改响应。
+- 改响应只对 **completionHandler 路径**生效。delegate 路径的数据是系统逐块喂给 delegate 的，插一层要替 App 实现整个 delegate，风险远大于收益，所以只记录不改，记录里会标注。
+- `action=hold`：请求发出前挂起，等 `decide`。最长 15 秒，超时自动放行；**主线程永不阻塞**（命中时直接放行并在记录里说明），否则 App 建任务的同一个 runloop 会被自己卡死。
+- `action=drop`：直接不发，调用方拿到 `nil` 任务。这个动作需要 App 容忍 nil，默认不要对关键接口用。
+- 规则落在 `Documents/AiFlex3Net/rules.json`，跨启动保留。
+
+### 22.5 `correlate`：把请求和原生调用对到一条时间线上
+
+```json
+{"operation":"correlate","id":"n12","window_ms":2000}
+```
+
+返回三样东西：`anchor`（这条请求的摘要）、`hookEvents`（`aiflex_hook` 在同一时间窗内的 enter/leave 事件，带 `offsetMs` 相对偏移）、`networkNeighbors`（同窗内其它网络记录）。时间基准是 `CLOCK_MONOTONIC` 纳秒，网络侧和 hook 侧共用同一个时钟。
+
+这是本引擎相对 FLEX 最有用的增量：加密参数到底是哪个函数算出来的，靠这个对齐去定位——先 `aiflex_hook` 挂上候选函数（`CCCrypt`、`CC_SHA256`、业务加密方法），再重放这条请求，看事件和请求的时间关系。
+
+### 22.6 硬边界
+
+1. **不解密 TLS**。`openssl` / `securetransport` 层能看到明文，前提是 App 自己调了那些函数；走 `nw_connection` 且自带加密实现的（如部分直播 SDK）仍看不到正文。
+2. **socket 层只有元数据**。`connect` / DNS / SNI，报文是密文，不做任何解密。
+3. **fishhook 有覆盖盲区**。只改「通过符号指针调用」的引用点；App 自带 dylib 内部对 `SSL_write` 的直接调用绕不过去。安装时遍历了所有非系统镜像逐个 rebind，已尽量覆盖。
+4. **body 截断**：存 64 KiB、返回 32 KiB；上传文件只取前 64 KiB 样本；下载只取落地文件前 64 KiB 预览。
+5. **记录窗口 400 条**，body 总量预算 24 MB；超预算时从最旧的记录开始释放 body，头信息保留。
+6. **不给 HTTP/2 帧级解析**：TLS 层重组出来的是字节流，HTTP/2 的多路复用语义无法在这里还原成「一请求一响应」，这类流量会出现配对错位，记录里保留 `note` 说明。
+7. **规则不改磁盘**：只影响本进程内存里的请求，不写回 App 二进制、不改变已发出的连接。
+8. **hook 装上不可卸**：tls / socket 的符号重绑没有安全的反向操作，关开关只是在回调入口短路，不再产生新记录。

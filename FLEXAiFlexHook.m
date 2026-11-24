@@ -931,8 +931,48 @@ static NSString *HXValidateExecutableTarget(uint64_t address, size_t needBytes) 
 #endif
 }
 
-#pragma mark - operation: clear
+#pragma mark - 按时间窗取事件（供网络引擎 correlate）
 
+// 与 opEvents 的差别：opEvents 用 seq 游标做增量拉取，供 AI 轮询；
+// 这个方法用单调时钟区间过滤，因为网络记录带的是时间戳而不是事件序号。
+// 两条通道读同一个环形缓冲，互不影响彼此的游标。
++ (NSArray<NSDictionary *> *)snapshotEventsFrom:(uint64_t)startNs
+                                             to:(uint64_t)endNs
+                                          limit:(NSUInteger)limit {
+#ifdef GX_NO_GUM
+    return @[];
+#else
+    if (!limit || endNs < startNs) return @[];
+    uint64_t writeIndex = __atomic_load_n(&gHXWriteIndex, __ATOMIC_ACQUIRE);
+    uint64_t oldest = writeIndex > HXEventCapacity ? writeIndex - HXEventCapacity : 0;
+    NSMutableArray *events = [NSMutableArray array];
+    // 从新到旧扫，命中足够条数就停，最后翻转成时间正序。
+    for (uint64_t index = writeIndex; index > oldest && events.count < limit; index--) {
+        HXEvent *event = &gHXEvents[(index - 1) % HXEventCapacity];
+        if (__atomic_load_n(&event->seq, __ATOMIC_ACQUIRE) != index) continue;
+        if (event->ts < startNs || event->ts > endNs) continue;
+
+        NSMutableDictionary *row = [NSMutableDictionary dictionary];
+        row[@"seq"] = @(event->seq);
+        row[@"id"] = @(event->hookId);
+        row[@"phase"] = event->phase == 0 ? @"enter" : @"leave";
+        row[@"thread"] = @(event->threadId);
+        row[@"depth"] = @(event->depth);
+        row[@"offsetMs"] = @((double)((int64_t)event->ts - (int64_t)startNs) / 1e6);
+        if (event->phase == 0) {
+            NSMutableArray *args = [NSMutableArray array];
+            for (guint i = 0; i < HXMaxArgs; i++) [args addObject:HXDescribePointer(event->args[i])];
+            row[@"args"] = args;
+        } else {
+            row[@"return"] = HXDescribePointer(event->ret);
+        }
+        [events insertObject:row atIndex:0];
+    }
+    return events;
+#endif
+}
+
+#pragma mark - operation: clear
 - (NSDictionary *)opClear:(NSDictionary *)arguments {
 #ifdef GX_NO_GUM
     return @{ @"cleared": @YES, @"note": HXErrorUnavailable };
